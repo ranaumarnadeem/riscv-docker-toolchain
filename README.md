@@ -4,11 +4,11 @@ A portable, dockerized GNU Toolchain for RISC-V development. Supports Multilib (
 
 ## Features
 
-- 🚀 **Multilib Support**: Supports both RV32 and RV64 with all standard extensions (I/M/A/F/D/C)
-- 🐳 **Dockerized**: Consistent development environment across different platforms
-- 🔧 **Easy to Use**: Simple wrapper scripts for common operations
-- 📦 **Portable**: Works on Linux, macOS, and Windows (via WSL)
-- ♻️ **Reproducible**: Consistent builds every time
+- **Multilib Support**: Supports both RV32 and RV64 with all standard extensions (I/M/A/F/D/C)
+- **Dockerized**: Consistent development environment across different platforms
+- **Easy to Use**: Simple wrapper scripts for common operations
+- **Portable**: Works on Linux, macOS, and Windows (via WSL)
+- **Reproducible**: Consistent builds every time
 
 ## Directory Structure
 
