@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Wrapper script to run 'make' inside the RISC-V Docker container
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

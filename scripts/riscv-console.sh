@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Wrapper script to enter the RISC-V Docker container with an interactive shell
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

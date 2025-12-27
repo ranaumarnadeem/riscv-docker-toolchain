@@ -15,7 +15,9 @@
 #define LED_PIN      5
 #define LED_MASK     (1 << LED_PIN)
 
-// Simple delay function
+// Simple delay function using busy-wait loop
+// NOTE: This is for demonstration only. For production code, use hardware timers
+// for accurate and consistent timing across different RISC-V implementations.
 void delay(uint32_t count) {
     for (volatile uint32_t i = 0; i < count; i++) {
         __asm__ volatile ("nop");
