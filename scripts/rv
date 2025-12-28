@@ -525,12 +525,11 @@ def run_repl():
     
     print_repl_banner()
     
-    # Set up readline for history (if available)
-    if HAS_READLINE:
-        try:
-            readline.read_history_file()
-        except (FileNotFoundError, PermissionError):
-            pass
+    # Set up readline for history
+    try:
+        readline.read_history_file()
+    except (FileNotFoundError, PermissionError):
+        pass
     
     while True:
         try:
@@ -572,12 +571,11 @@ def run_repl():
             print("\nGoodbye!")
             break
     
-    # Save history (if readline available)
-    if HAS_READLINE:
-        try:
-            readline.write_history_file()
-        except (FileNotFoundError, PermissionError):
-            pass
+    # Save history
+    try:
+        readline.write_history_file()
+    except (FileNotFoundError, PermissionError):
+        pass
 
 
 def main():
