@@ -6,14 +6,26 @@ A portable CLI wrapper for the RISC-V GNU Toolchain.
 Works in two modes:
 1. Host mode: Automatically runs commands inside Docker container
 2. Container mode: Runs tools directly (when already inside container)
+
+Can be used as:
+- Single command: rv build test.c --arch 32imac
+- Interactive REPL: rv (then type commands)
 """
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# readline is optional (not available on Windows by default)
+try:
+    import readline
+    HAS_READLINE = True
+except ImportError:
+    HAS_READLINE = False
 
 # Tool prefix for Alpine's RISC-V toolchain
 TOOL_PREFIX = "riscv-none-elf-"
@@ -360,7 +372,8 @@ def cmd_build_image(args):
     sys.exit(result.returncode)
 
 
-def main():
+def create_parser():
+    """Create and return the argument parser."""
     parser = argparse.ArgumentParser(
         prog="rv",
         description="RISC-V Toolchain CLI Wrapper",
@@ -372,10 +385,14 @@ Examples:
   rv build test.c --arch 32imc_zba_zbb --cflags "-DDEBUG -Wall"
   rv dump build/test.elf
   rv dump build/test.elf --grep clz
-  rv shell                    # Interactive shell
   rv archs                    # List architectures
   rv version                  # Show toolchain version
+  rv shell                    # Container shell
   rv build-image              # Build Docker image
+
+Interactive mode:
+  rv                          # Start interactive REPL
+  Then type commands directly: build test.c --arch 32imac
         """
     )
     
@@ -429,39 +446,149 @@ Examples:
     build_image_parser = subparsers.add_parser("build-image", help="Build the Docker image")
     build_image_parser.set_defaults(func=cmd_build_image)
     
-    # Parse arguments
-    args = parser.parse_args()
+    return parser
+
+
+def execute_command(parser, cmd_args: list[str]) -> int:
+    """Execute a single command. Returns exit code."""
+    try:
+        args = parser.parse_args(cmd_args)
+    except SystemExit:
+        return 1
     
     if args.command is None:
         parser.print_help()
-        sys.exit(0)
+        return 0
     
     # Check if we're on the host or inside container
     if is_inside_container():
         # Inside container: run commands directly
-        args.func(args)
+        try:
+            args.func(args)
+            return 0
+        except SystemExit as e:
+            return e.code if e.code else 0
     else:
         # On host: check Docker and delegate to container
         if not check_docker_available():
             print("Error: Docker is not installed or not in PATH.")
             print("Please install Docker to use this tool.")
-            sys.exit(1)
+            return 1
         
         # These commands run on host directly
         if args.command in ["shell", "build-image"]:
-            args.func(args)
+            try:
+                args.func(args)
+                return 0
+            except SystemExit as e:
+                return e.code if e.code else 0
         else:
             # Check if image exists
             if not check_docker_image_exists():
                 print(f"Error: Docker image '{DOCKER_IMAGE}' not found.")
-                print("Build it first with: rv build-image")
-                sys.exit(1)
+                print("Build it first with: build-image")
+                return 1
             
             # Delegate to container
-            # Reconstruct the command line arguments
-            cmd_args = sys.argv[1:]
-            exit_code = run_in_docker(cmd_args)
-            sys.exit(exit_code)
+            return run_in_docker(cmd_args)
+
+
+def print_repl_banner():
+    """Print the REPL welcome banner."""
+    print()
+    print("=" * 60)
+    print("  RISC-V Toolchain CLI - Interactive Mode")
+    print("=" * 60)
+    print()
+    print("Commands:")
+    print("  build <file> --arch <arch>   Compile C to ELF")
+    print("  dump <file.elf> [--grep X]   Disassemble ELF")
+    print("  archs                        List architectures")
+    print("  version                      Show toolchain version")
+    print("  shell                        Container shell")
+    print("  build-image                  Build Docker image")
+    print("  help                         Show full help")
+    print("  exit / quit                  Exit REPL")
+    print()
+
+
+def run_repl():
+    """Run the interactive REPL."""
+    parser = create_parser()
+    
+    # Check Docker availability upfront
+    if not is_inside_container():
+        if not check_docker_available():
+            print("Error: Docker is not installed or not in PATH.")
+            print("Please install Docker to use this tool.")
+            sys.exit(1)
+    
+    print_repl_banner()
+    
+    # Set up readline for history (if available)
+    if HAS_READLINE:
+        try:
+            readline.read_history_file()
+        except (FileNotFoundError, PermissionError):
+            pass
+    
+    while True:
+        try:
+            # Show prompt
+            user_input = input("rv> ").strip()
+            
+            # Skip empty lines
+            if not user_input:
+                continue
+            
+            # Handle exit commands
+            if user_input.lower() in ["exit", "quit", "q"]:
+                print("Goodbye!")
+                break
+            
+            # Handle help command
+            if user_input.lower() == "help":
+                parser.print_help()
+                continue
+            
+            # Handle clear command
+            if user_input.lower() in ["clear", "cls"]:
+                os.system('cls' if sys.platform == 'win32' else 'clear')
+                continue
+            
+            # Parse and execute the command
+            try:
+                cmd_args = shlex.split(user_input)
+            except ValueError as e:
+                print(f"Error: Invalid command syntax: {e}")
+                continue
+            
+            execute_command(parser, cmd_args)
+            print()  # Add blank line after command output
+            
+        except KeyboardInterrupt:
+            print("\n(Use 'exit' or 'quit' to leave)")
+        except EOFError:
+            print("\nGoodbye!")
+            break
+    
+    # Save history (if readline available)
+    if HAS_READLINE:
+        try:
+            readline.write_history_file()
+        except (FileNotFoundError, PermissionError):
+            pass
+
+
+def main():
+    # If no arguments, start REPL
+    if len(sys.argv) == 1:
+        run_repl()
+        return
+    
+    parser = create_parser()
+    exit_code = execute_command(parser, sys.argv[1:])
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
