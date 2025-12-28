@@ -211,6 +211,13 @@ def cmd_build(args):
     # Get architecture and ABI
     march, mabi = get_arch_abi(args.arch)
     
+    # For bare-metal, add zicsr extension if not already present (needed for CSR instructions in startup code)
+    if args.bare and "_zicsr" not in march and "zicsr" not in march:
+        march = march + "_zicsr"
+    
+    # Determine if 32-bit or 64-bit
+    is_64bit = args.arch.startswith("64")
+    
     # Validate optimization level
     opt = args.opt if args.opt.startswith("O") else f"O{args.opt}"
     if opt.upper() not in [o.upper() for o in OPT_LEVELS]:
@@ -226,10 +233,32 @@ def cmd_build(args):
         f"-mabi={mabi}",
         f"-{opt}",
         "-g",
-        "--specs=nosys.specs",
-        str(source),
-        "-o", str(output),
     ]
+    
+    # Handle bare-metal vs hosted build
+    if args.bare:
+        # Bare-metal: use custom linker script and startup code
+        # Determine paths (works both in container and on host via Docker mount)
+        if is_inside_container():
+            ld_script = f"/usr/local/share/riscv/riscv{'64' if is_64bit else '_32'}.ld"
+            crt0 = f"/usr/local/share/riscv/crt0_{'64' if is_64bit else '32'}.S"
+        else:
+            ld_script = f"scripts/riscv{'64' if is_64bit else '_32'}.ld"
+            crt0 = f"scripts/crt0_{'64' if is_64bit else '32'}.S"
+        
+        cmd.extend([
+            "-nostartfiles",
+            "-ffreestanding",
+            f"-T{ld_script}",
+            crt0,
+        ])
+        build_mode = "bare-metal"
+    else:
+        # Hosted: use newlib
+        cmd.append("--specs=nosys.specs")
+        build_mode = "hosted (newlib)"
+    
+    cmd.extend([str(source), "-o", str(output)])
     
     # Add extra cflags if provided
     if args.cflags:
@@ -238,11 +267,48 @@ def cmd_build(args):
     
     print(f"Compiling {source} -> {output}")
     print(f"  Architecture: {march}, ABI: {mabi}, Optimization: -{opt}")
+    print(f"  Mode: {build_mode}")
     
     result = run_command(cmd)
     
     if result.returncode == 0:
         print(f"Success: {output}")
+    else:
+        sys.exit(result.returncode)
+
+
+def cmd_bin(args):
+    """Convert ELF file to raw binary."""
+    elf_file = Path(args.file)
+    
+    if not elf_file.exists():
+        print(f"Error: ELF file '{elf_file}' not found.")
+        sys.exit(1)
+    
+    # Determine output path
+    if args.output:
+        output = Path(args.output)
+    else:
+        output = elf_file.with_suffix(".bin")
+    
+    # Ensure output directory exists
+    output.parent.mkdir(parents=True, exist_ok=True)
+    
+    objcopy = f"{TOOL_PREFIX}objcopy"
+    cmd = [
+        objcopy,
+        "-O", "binary",
+        str(elf_file),
+        str(output)
+    ]
+    
+    print(f"Converting {elf_file} -> {output}")
+    result = run_command(cmd)
+    
+    if result.returncode == 0:
+        # Show file size
+        size = output.stat().st_size
+        print(f"Success: {output} ({size} bytes)")
     else:
         sys.exit(result.returncode)
 
@@ -385,13 +451,19 @@ Examples:
   rv build test.c --arch 32imc_zba_zbb --cflags "-DDEBUG -Wall"
   rv dump build/test.elf
   rv dump build/test.elf --grep clz
-  rv archs                    # List architectures
-  rv version                  # Show toolchain version
-  rv shell                    # Container shell
-  rv build-image              # Build Docker image
+  rv bin build/test.elf               # Convert ELF to raw binary
+  rv bin build/test.elf -o fw.bin     # Custom output name
+  rv archs                            # List architectures
+  rv version                          # Show toolchain version
+  rv shell                            # Container shell
+  rv build-image                      # Build Docker image
+
+Bare-metal build:
+  rv build test.c --arch 32imac --bare        # Uses included linker script & startup
+  rv bin build/test.elf                       # Convert to flashable binary
 
 Interactive mode:
-  rv                          # Start interactive REPL
+  rv                                  # Start interactive REPL
   Then type commands directly: build test.c --arch 32imac
         """
     )
@@ -416,6 +488,11 @@ Interactive mode:
         help="Optimization level: O0, O1, O2, O3, Os, Oz (default: O2)"
     )
     build_parser.add_argument(
+        "--bare",
+        action="store_true",
+        help="Bare-metal build (no libc, uses included linker script and startup code)"
+    )
+    build_parser.add_argument(
         "--cflags",
         help="Additional compiler flags (e.g., \"--cflags '-DDEBUG -Wall'\")"
     )
@@ -429,6 +506,15 @@ Interactive mode:
         help="Filter output for lines containing this pattern"
     )
     dump_parser.set_defaults(func=cmd_dump)
+    
+    # bin command
+    bin_parser = subparsers.add_parser("bin", help="Convert ELF to raw binary")
+    bin_parser.add_argument("file", help="ELF file to convert")
+    bin_parser.add_argument(
+        "-o", "--output",
+        help="Output file path (default: <filename>.bin)"
+    )
+    bin_parser.set_defaults(func=cmd_bin)
     
     # version command
     version_parser = subparsers.add_parser("version", help="Show toolchain versions")
