@@ -8,16 +8,23 @@ FROM alpine:latest
 # 4. make                  : The Build System
 # 5. build-base            : Standard Linux build tools (optional but recommended)
 # 6. file                  : Utility to check file headers
+# 7. python3               : For the rv CLI wrapper
 RUN apk add --no-cache \
     gcc-riscv-none-elf \
     newlib-riscv-none-elf \
     binutils-riscv-none-elf \
     make \
     build-base \
-    file
+    file \
+    python3
+
+# Copy the rv CLI wrapper and make it executable
+# Use sed to convert Windows CRLF to Unix LF line endings
+COPY scripts/rv /usr/local/bin/rv
+RUN sed -i 's/\r$//' /usr/local/bin/rv && chmod +x /usr/local/bin/rv
 
 # Set the working directory to /src so you land there automatically
 WORKDIR /src
 
-# (Optional) Default command runs 'make' if you don't type anything else
-CMD ["make"]
+# Default command shows rv help
+CMD ["rv", "--help"]

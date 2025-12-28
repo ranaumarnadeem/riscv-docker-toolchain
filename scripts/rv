@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""
+rv - RISC-V Toolchain CLI Wrapper
+A portable CLI wrapper for the RISC-V GNU Toolchain.
+
+Works in two modes:
+1. Host mode: Automatically runs commands inside Docker container
+2. Container mode: Runs tools directly (when already inside container)
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+# Tool prefix for Alpine's RISC-V toolchain
+TOOL_PREFIX = "riscv-none-elf-"
+
+# Docker image name
+DOCKER_IMAGE = "riscv-toolchain"
+
+# Architecture presets: maps shorthand to (march, mabi)
+ARCH_PRESETS = {
+    # 32-bit architectures
+    "32i":       ("rv32i",       "ilp32"),
+    "32im":      ("rv32im",      "ilp32"),
+    "32ima":     ("rv32ima",     "ilp32"),
+    "32imac":    ("rv32imac",    "ilp32"),
+    "32imafc":   ("rv32imafc",   "ilp32f"),
+    "32imafdc":  ("rv32imafdc",  "ilp32d"),
+    # 64-bit architectures
+    "64i":       ("rv64i",       "lp64"),
+    "64im":      ("rv64im",      "lp64"),
+    "64ima":     ("rv64ima",     "lp64"),
+    "64imac":    ("rv64imac",    "lp64"),
+    "64imafc":   ("rv64imafc",   "lp64f"),
+    "64imafdc":  ("rv64imafdc",  "lp64d"),
+}
+
+# Valid optimization levels
+OPT_LEVELS = ["O0", "O1", "O2", "O3", "Os", "Oz"]
+
+
+def is_inside_container() -> bool:
+    """Check if we're running inside a Docker container."""
+    # Check for .dockerenv file (Docker creates this)
+    if os.path.exists("/.dockerenv"):
+        return True
+    # Check for container environment variable
+    if os.environ.get("container"):
+        return True
+    # Check cgroup (Linux containers)
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            return "docker" in f.read() or "containerd" in f.read()
+    except (FileNotFoundError, PermissionError):
+        pass
+    return False
+
+
+def check_docker_available() -> bool:
+    """Check if Docker is available on the host."""
+    return shutil.which("docker") is not None
+
+
+def check_docker_image_exists() -> bool:
+    """Check if the RISC-V toolchain Docker image exists."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", DOCKER_IMAGE],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def get_project_root() -> Path:
+    """Get the project root directory (where the script is located)."""
+    script_path = Path(__file__).resolve()
+    # scripts/rv -> parent is scripts/, parent.parent is project root
+    return script_path.parent.parent
+
+
+def get_docker_path(path: Path) -> str:
+    """Convert a path to Docker-compatible format (for volume mounts)."""
+    path_str = str(path.resolve())
+    
+    # On Windows, convert backslashes and handle drive letters
+    if sys.platform == "win32":
+        # Convert C:\Users\... to /c/Users/... for Docker
+        if len(path_str) >= 2 and path_str[1] == ':':
+            drive = path_str[0].lower()
+            path_str = f"/{drive}{path_str[2:]}"
+        path_str = path_str.replace("\\", "/")
+    
+    return path_str
+
+
+def run_in_docker(args: list[str], interactive: bool = False) -> int:
+    """Run a command inside the Docker container."""
+    project_root = get_project_root()
+    docker_path = get_docker_path(project_root)
+    
+    docker_cmd = [
+        "docker", "run", "--rm",
+    ]
+    
+    if interactive:
+        docker_cmd.extend(["-it"])
+    
+    # Mount project root to /src
+    docker_cmd.extend([
+        "-v", f"{docker_path}:/src",
+        "-w", "/src",
+        DOCKER_IMAGE,
+    ])
+    
+    # Add the rv command and its arguments
+    docker_cmd.extend(["rv"] + args)
+    
+    result = subprocess.run(docker_cmd)
+    return result.returncode
+
+
+def run_command(cmd: list[str], capture: bool = False) -> subprocess.CompletedProcess:
+    """Run a command and handle errors."""
+    try:
+        if capture:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        else:
+            result = subprocess.run(cmd)
+        return result
+    except FileNotFoundError:
+        print(f"Error: Command '{cmd[0]}' not found.")
+        print("Make sure you're running inside the RISC-V toolchain container.")
+        sys.exit(1)
+
+
+def get_arch_abi(arch_str: str) -> tuple[str, str]:
+    """
+    Convert architecture string to (march, mabi) tuple.
+    Supports presets (e.g., '32imac') or custom (e.g., '32imc_zba_zbb').
+    """
+    # Check if it's a preset
+    if arch_str in ARCH_PRESETS:
+        return ARCH_PRESETS[arch_str]
+    
+    # Custom architecture - infer ABI from the string
+    # Expected format: 32<ext> or 64<ext> (e.g., 32imc_zba_zbb, 64imac_zba)
+    if arch_str.startswith("32"):
+        march = f"rv{arch_str}"
+        # Determine ABI based on floating-point extensions
+        if "d" in arch_str.split("_")[0]:  # Check base arch for 'd'
+            mabi = "ilp32d"
+        elif "f" in arch_str.split("_")[0]:  # Check base arch for 'f'
+            mabi = "ilp32f"
+        else:
+            mabi = "ilp32"
+        return (march, mabi)
+    elif arch_str.startswith("64"):
+        march = f"rv{arch_str}"
+        # Determine ABI based on floating-point extensions
+        if "d" in arch_str.split("_")[0]:
+            mabi = "lp64d"
+        elif "f" in arch_str.split("_")[0]:
+            mabi = "lp64f"
+        else:
+            mabi = "lp64"
+        return (march, mabi)
+    else:
+        print(f"Error: Invalid architecture '{arch_str}'.")
+        print("Architecture must start with '32' or '64' (e.g., 32imac, 64imafdc, 32imc_zba_zbb)")
+        sys.exit(1)
+
+
+def cmd_build(args):
+    """Build (compile) a C file to ELF."""
+    source = Path(args.file)
+    
+    if not source.exists():
+        print(f"Error: Source file '{source}' not found.")
+        sys.exit(1)
+    
+    # Determine output path
+    if args.output:
+        output = Path(args.output)
+    else:
+        build_dir = Path("build")
+        build_dir.mkdir(exist_ok=True)
+        output = build_dir / f"{source.stem}.elf"
+    
+    # Ensure output directory exists
+    output.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Get architecture and ABI
+    march, mabi = get_arch_abi(args.arch)
+    
+    # Validate optimization level
+    opt = args.opt if args.opt.startswith("O") else f"O{args.opt}"
+    if opt.upper() not in [o.upper() for o in OPT_LEVELS]:
+        print(f"Error: Invalid optimization level '{args.opt}'.")
+        print(f"Valid options: {', '.join(OPT_LEVELS)}")
+        sys.exit(1)
+    
+    # Build GCC command
+    gcc = f"{TOOL_PREFIX}gcc"
+    cmd = [
+        gcc,
+        f"-march={march}",
+        f"-mabi={mabi}",
+        f"-{opt}",
+        "-g",
+        "--specs=nosys.specs",
+        str(source),
+        "-o", str(output),
+    ]
+    
+    # Add extra cflags if provided
+    if args.cflags:
+        # Split cflags string into individual flags
+        cmd.extend(args.cflags.split())
+    
+    print(f"Compiling {source} -> {output}")
+    print(f"  Architecture: {march}, ABI: {mabi}, Optimization: -{opt}")
+    
+    result = run_command(cmd)
+    
+    if result.returncode == 0:
+        print(f"Success: {output}")
+    else:
+        sys.exit(result.returncode)
+
+
+def cmd_dump(args):
+    """Disassemble an ELF file using objdump."""
+    elf_file = Path(args.file)
+    
+    if not elf_file.exists():
+        print(f"Error: ELF file '{elf_file}' not found.")
+        sys.exit(1)
+    
+    objdump = f"{TOOL_PREFIX}objdump"
+    cmd = [objdump, "-d", str(elf_file)]
+    
+    if args.grep:
+        # Run objdump and filter output
+        result = run_command(cmd, capture=True)
+        if result.returncode != 0:
+            print(result.stderr)
+            sys.exit(result.returncode)
+        
+        lines = result.stdout.splitlines()
+        matches = [line for line in lines if args.grep in line]
+        
+        if matches:
+            print(f"Found {len(matches)} match(es) for '{args.grep}':")
+            for line in matches:
+                print(line)
+        else:
+            print(f"No matches found for '{args.grep}'")
+    else:
+        # Just run objdump directly
+        result = run_command(cmd)
+        sys.exit(result.returncode)
+
+
+def cmd_version(args):
+    """Show toolchain version information."""
+    print("RISC-V Toolchain Versions:")
+    print("-" * 40)
+    
+    # GCC version
+    gcc = f"{TOOL_PREFIX}gcc"
+    print(f"\n{gcc}:")
+    run_command([gcc, "--version"])
+    
+    # Binutils version (via ld)
+    ld = f"{TOOL_PREFIX}ld"
+    print(f"\n{ld}:")
+    run_command([ld, "--version"])
+
+
+def cmd_archs(args):
+    """List supported architecture presets."""
+    print("Supported Architecture Presets:")
+    print("=" * 60)
+    print(f"{'Preset':<15} {'--march':<20} {'--mabi':<10}")
+    print("-" * 60)
+    
+    print("\n32-bit architectures:")
+    for name, (march, mabi) in ARCH_PRESETS.items():
+        if name.startswith("32"):
+            print(f"  {name:<13} {march:<20} {mabi:<10}")
+    
+    print("\n64-bit architectures:")
+    for name, (march, mabi) in ARCH_PRESETS.items():
+        if name.startswith("64"):
+            print(f"  {name:<13} {march:<20} {mabi:<10}")
+    
+    print("\n" + "=" * 60)
+    print("Custom architectures:")
+    print("  You can also use custom arch strings like:")
+    print("    --arch 32imc_zba_zbb  (RV32 with bit manipulation)")
+    print("    --arch 64imac_zba     (RV64 with address generation)")
+    print("\n  The ABI is automatically inferred from the architecture.")
+
+
+def cmd_shell(args):
+    """Start an interactive shell inside the container."""
+    if is_inside_container():
+        print("Already inside the container. Just use the shell directly.")
+        sys.exit(0)
+    
+    project_root = get_project_root()
+    docker_path = get_docker_path(project_root)
+    
+    docker_cmd = [
+        "docker", "run", "--rm", "-it",
+        "-v", f"{docker_path}:/src",
+        "-w", "/src",
+        DOCKER_IMAGE,
+        "/bin/sh"
+    ]
+    
+    print(f"Starting interactive shell in {DOCKER_IMAGE}...")
+    result = subprocess.run(docker_cmd)
+    sys.exit(result.returncode)
+
+
+def cmd_build_image(args):
+    """Build the Docker image."""
+    if is_inside_container():
+        print("Error: Cannot build Docker image from inside a container.")
+        sys.exit(1)
+    
+    project_root = get_project_root()
+    dockerfile = project_root / "Dockerfile"
+    
+    if not dockerfile.exists():
+        print(f"Error: Dockerfile not found at {dockerfile}")
+        sys.exit(1)
+    
+    print(f"Building Docker image '{DOCKER_IMAGE}'...")
+    docker_cmd = [
+        "docker", "build",
+        "-t", DOCKER_IMAGE,
+        str(project_root)
+    ]
+    
+    result = subprocess.run(docker_cmd)
+    
+    if result.returncode == 0:
+        print(f"\nSuccess! Image '{DOCKER_IMAGE}' is ready.")
+        print(f"Run 'rv build <file> --arch <arch>' to compile.")
+    
+    sys.exit(result.returncode)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="rv",
+        description="RISC-V Toolchain CLI Wrapper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  rv build test.c --arch 32imac
+  rv build test.c --arch 32imac -o output.elf --opt O0
+  rv build test.c --arch 32imc_zba_zbb --cflags "-DDEBUG -Wall"
+  rv dump build/test.elf
+  rv dump build/test.elf --grep clz
+  rv shell                    # Interactive shell
+  rv archs                    # List architectures
+  rv version                  # Show toolchain version
+  rv build-image              # Build Docker image
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # build command
+    build_parser = subparsers.add_parser("build", help="Compile C source to ELF")
+    build_parser.add_argument("file", help="Source file to compile (e.g., test.c)")
+    build_parser.add_argument(
+        "--arch", 
+        required=True,
+        help="Target architecture (e.g., 32imac, 64imafdc, 32imc_zba_zbb)"
+    )
+    build_parser.add_argument(
+        "-o", "--output",
+        help="Output file path (default: build/<filename>.elf)"
+    )
+    build_parser.add_argument(
+        "--opt",
+        default="O2",
+        help="Optimization level: O0, O1, O2, O3, Os, Oz (default: O2)"
+    )
+    build_parser.add_argument(
+        "--cflags",
+        help="Additional compiler flags (e.g., \"--cflags '-DDEBUG -Wall'\")"
+    )
+    build_parser.set_defaults(func=cmd_build)
+    
+    # dump command
+    dump_parser = subparsers.add_parser("dump", help="Disassemble ELF file")
+    dump_parser.add_argument("file", help="ELF file to disassemble")
+    dump_parser.add_argument(
+        "--grep",
+        help="Filter output for lines containing this pattern"
+    )
+    dump_parser.set_defaults(func=cmd_dump)
+    
+    # version command
+    version_parser = subparsers.add_parser("version", help="Show toolchain versions")
+    version_parser.set_defaults(func=cmd_version)
+    
+    # archs command
+    archs_parser = subparsers.add_parser("archs", help="List supported architectures")
+    archs_parser.set_defaults(func=cmd_archs)
+    
+    # shell command
+    shell_parser = subparsers.add_parser("shell", help="Start interactive shell in container")
+    shell_parser.set_defaults(func=cmd_shell)
+    
+    # build-image command
+    build_image_parser = subparsers.add_parser("build-image", help="Build the Docker image")
+    build_image_parser.set_defaults(func=cmd_build_image)
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
+    
+    # Check if we're on the host or inside container
+    if is_inside_container():
+        # Inside container: run commands directly
+        args.func(args)
+    else:
+        # On host: check Docker and delegate to container
+        if not check_docker_available():
+            print("Error: Docker is not installed or not in PATH.")
+            print("Please install Docker to use this tool.")
+            sys.exit(1)
+        
+        # These commands run on host directly
+        if args.command in ["shell", "build-image"]:
+            args.func(args)
+        else:
+            # Check if image exists
+            if not check_docker_image_exists():
+                print(f"Error: Docker image '{DOCKER_IMAGE}' not found.")
+                print("Build it first with: rv build-image")
+                sys.exit(1)
+            
+            # Delegate to container
+            # Reconstruct the command line arguments
+            cmd_args = sys.argv[1:]
+            exit_code = run_in_docker(cmd_args)
+            sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
