@@ -23,6 +23,12 @@ RUN apk add --no-cache \
 COPY scripts/rv /usr/local/bin/rv
 RUN sed -i 's/\r$//' /usr/local/bin/rv && chmod +x /usr/local/bin/rv
 
+# Copy linker scripts and startup files for bare-metal development
+COPY scripts/riscv_32.ld /usr/local/share/riscv/riscv_32.ld
+COPY scripts/riscv64.ld /usr/local/share/riscv/riscv64.ld
+COPY scripts/crt0_32.S /usr/local/share/riscv/crt0_32.S
+COPY scripts/crt0_64.S /usr/local/share/riscv/crt0_64.S
+
 # Set the working directory to /src so you land there automatically
 WORKDIR /src
 
