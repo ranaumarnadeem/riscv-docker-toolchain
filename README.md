@@ -5,11 +5,9 @@ A portable, dockerized GNU Toolchain for RISC-V development. Supports RV32/RV64 
 ## Quick Start
 
 ```bash
-# Pull from Docker Hub (recommended)
+# Pull from Docker Hub 
 docker pull ranaumarnadeem/riscv-toolchain
 
-# Or build locally
-docker build -t ranaumarnadeem/riscv-toolchain .
 
 # Set up alias (add to ~/.bashrc or ~/.zshrc for permanent use)
 alias rv='docker run --rm -v "$(pwd):/src" ranaumarnadeem/riscv-toolchain rv'

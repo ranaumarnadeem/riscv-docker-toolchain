@@ -1,0 +1,114 @@
+{
+  "name": "riscv-toolchain",
+  "displayName": "RISC-V Toolchain",
+  "description": "Build, disassemble, and convert RISC-V programs with Docker-based GNU toolchain",
+  "version": "0.1.0",
+  "publisher": "ranaumarnadeem",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ranaumarnadeem/riscv-docker-toolchain"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "risc-v",
+    "riscv",
+    "embedded",
+    "toolchain",
+    "compiler",
+    "bare-metal"
+  ],
+  "activationEvents": [
+    "onLanguage:c",
+    "onLanguage:cpp"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "riscv-toolchain",
+          "title": "RISC-V Toolchain",
+          "icon": "resources/riscv.svg"
+        }
+      ]
+    },
+    "views": {
+      "riscv-toolchain": [
+        {
+          "type": "webview",
+          "id": "riscv-toolchain.sidebar",
+          "name": "Build Panel"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "riscv-toolchain.build",
+        "title": "RISC-V: Build"
+      },
+      {
+        "command": "riscv-toolchain.dump",
+        "title": "RISC-V: Disassemble"
+      },
+      {
+        "command": "riscv-toolchain.bin",
+        "title": "RISC-V: Convert to Binary"
+      },
+      {
+        "command": "riscv-toolchain.selectFile",
+        "title": "RISC-V: Select Source File"
+      },
+      {
+        "command": "riscv-toolchain.refresh",
+        "title": "RISC-V: Refresh"
+      }
+    ],
+    "configuration": {
+      "title": "RISC-V Toolchain",
+      "properties": {
+        "riscv-toolchain.dockerImage": {
+          "type": "string",
+          "default": "ranaumarnadeem/riscv-toolchain",
+          "description": "Docker image to use for compilation"
+        },
+        "riscv-toolchain.defaultArch": {
+          "type": "string",
+          "default": "32imac",
+          "description": "Default architecture preset"
+        },
+        "riscv-toolchain.defaultOptimization": {
+          "type": "string",
+          "default": "O2",
+          "enum": ["O0", "O1", "O2", "O3", "Os", "Oz"],
+          "description": "Default optimization level"
+        },
+        "riscv-toolchain.bareMetal": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use bare-metal build by default"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  }
+}
