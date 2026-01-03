@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 rv - RISC-V Toolchain CLI Wrapper
-A portable CLI wrapper for the RISC-V GNU Toolchain.
+A CLI wrapper for the RISC-V GNU Toolchain.
 
-Works in two modes:
-1. Host mode: Automatically runs commands inside Docker container
-2. Container mode: Runs tools directly (when already inside container)
+Designed to run inside the riscv-toolchain Docker container.
+Usage:
+  docker run --rm -v $(pwd):/src riscv-toolchain rv build test.c --arch 32imac
+  docker run --rm -it -v $(pwd):/src riscv-toolchain  # Interactive shell, then use rv commands
 
 Can be used as:
 - Single command: rv build test.c --arch 32imac
@@ -15,7 +16,6 @@ Can be used as:
 import argparse
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,9 +29,6 @@ except ImportError:
 
 # Tool prefix for Alpine's RISC-V toolchain
 TOOL_PREFIX = "riscv-none-elf-"
-
-# Docker image name
-DOCKER_IMAGE = "riscv-toolchain"
 
 # Architecture presets: maps shorthand to (march, mabi)
 ARCH_PRESETS = {
@@ -53,89 +50,6 @@ ARCH_PRESETS = {
 
 # Valid optimization levels
 OPT_LEVELS = ["O0", "O1", "O2", "O3", "Os", "Oz"]
-
-
-def is_inside_container() -> bool:
-    """Check if we're running inside a Docker container."""
-    # Check for .dockerenv file (Docker creates this)
-    if os.path.exists("/.dockerenv"):
-        return True
-    # Check for container environment variable
-    if os.environ.get("container"):
-        return True
-    # Check cgroup (Linux containers)
-    try:
-        with open("/proc/1/cgroup", "r") as f:
-            return "docker" in f.read() or "containerd" in f.read()
-    except (FileNotFoundError, PermissionError):
-        pass
-    return False
-
-
-def check_docker_available() -> bool:
-    """Check if Docker is available on the host."""
-    return shutil.which("docker") is not None
-
-
-def check_docker_image_exists() -> bool:
-    """Check if the RISC-V toolchain Docker image exists."""
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", DOCKER_IMAGE],
-            capture_output=True,
-            text=True
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
-
-
-def get_project_root() -> Path:
-    """Get the project root directory (where the script is located)."""
-    script_path = Path(__file__).resolve()
-    # scripts/rv -> parent is scripts/, parent.parent is project root
-    return script_path.parent.parent
-
-
-def get_docker_path(path: Path) -> str:
-    """Convert a path to Docker-compatible format (for volume mounts)."""
-    path_str = str(path.resolve())
-    
-    # On Windows, convert backslashes and handle drive letters
-    if sys.platform == "win32":
-        # Convert C:\Users\... to /c/Users/... for Docker
-        if len(path_str) >= 2 and path_str[1] == ':':
-            drive = path_str[0].lower()
-            path_str = f"/{drive}{path_str[2:]}"
-        path_str = path_str.replace("\\", "/")
-    
-    return path_str
-
-
-def run_in_docker(args: list[str], interactive: bool = False) -> int:
-    """Run a command inside the Docker container."""
-    project_root = get_project_root()
-    docker_path = get_docker_path(project_root)
-    
-    docker_cmd = [
-        "docker", "run", "--rm",
-    ]
-    
-    if interactive:
-        docker_cmd.extend(["-it"])
-    
-    # Mount project root to /src
-    docker_cmd.extend([
-        "-v", f"{docker_path}:/src",
-        "-w", "/src",
-        DOCKER_IMAGE,
-    ])
-    
-    # Add the rv command and its arguments
-    docker_cmd.extend(["rv"] + args)
-    
-    result = subprocess.run(docker_cmd)
-    return result.returncode
 
 
 def run_command(cmd: list[str], capture: bool = False) -> subprocess.CompletedProcess:
@@ -238,13 +152,8 @@ def cmd_build(args):
     # Handle bare-metal vs hosted build
     if args.bare:
         # Bare-metal: use custom linker script and startup code
-        # Determine paths (works both in container and on host via Docker mount)
-        if is_inside_container():
-            ld_script = f"/usr/local/share/riscv/riscv{'64' if is_64bit else '_32'}.ld"
-            crt0 = f"/usr/local/share/riscv/crt0_{'64' if is_64bit else '32'}.S"
-        else:
-            ld_script = f"scripts/riscv{'64' if is_64bit else '_32'}.ld"
-            crt0 = f"scripts/crt0_{'64' if is_64bit else '32'}.S"
+        ld_script = f"/usr/local/share/riscv/riscv{'64' if is_64bit else '_32'}.ld"
+        crt0 = f"/usr/local/share/riscv/crt0_{'64' if is_64bit else '32'}.S"
         
         cmd.extend([
             "-nostartfiles",
@@ -387,62 +296,23 @@ def cmd_archs(args):
     print("\n  The ABI is automatically inferred from the architecture.")
 
 
-def cmd_shell(args):
-    """Start an interactive shell inside the container."""
-    if is_inside_container():
-        print("Already inside the container. Just use the shell directly.")
-        sys.exit(0)
-    
-    project_root = get_project_root()
-    docker_path = get_docker_path(project_root)
-    
-    docker_cmd = [
-        "docker", "run", "--rm", "-it",
-        "-v", f"{docker_path}:/src",
-        "-w", "/src",
-        DOCKER_IMAGE,
-        "/bin/sh"
-    ]
-    
-    print(f"Starting interactive shell in {DOCKER_IMAGE}...")
-    result = subprocess.run(docker_cmd)
-    sys.exit(result.returncode)
-
-
 def cmd_build_image(args):
-    """Build the Docker image."""
-    if is_inside_container():
-        print("Error: Cannot build Docker image from inside a container.")
-        sys.exit(1)
-    
-    project_root = get_project_root()
-    dockerfile = project_root / "Dockerfile"
-    
-    if not dockerfile.exists():
-        print(f"Error: Dockerfile not found at {dockerfile}")
-        sys.exit(1)
-    
-    print(f"Building Docker image '{DOCKER_IMAGE}'...")
-    docker_cmd = [
-        "docker", "build",
-        "-t", DOCKER_IMAGE,
-        str(project_root)
-    ]
-    
-    result = subprocess.run(docker_cmd)
-    
-    if result.returncode == 0:
-        print(f"\nSuccess! Image '{DOCKER_IMAGE}' is ready.")
-        print(f"Run 'rv build <file> --arch <arch>' to compile.")
-    
-    sys.exit(result.returncode)
+    """Show instructions for building the Docker image."""
+    print("To build the Docker image, run from the host:")
+    print()
+    print("  docker build -t riscv-toolchain .")
+    print()
+    print("Then run the container:")
+    print("  docker run --rm -v $(pwd):/src riscv-toolchain rv build <file> --arch <arch>")
+    print("  docker run --rm -it -v $(pwd):/src riscv-toolchain  # Interactive shell")
+    sys.exit(0)
 
 
 def create_parser():
     """Create and return the argument parser."""
     parser = argparse.ArgumentParser(
         prog="rv",
-        description="RISC-V Toolchain CLI Wrapper",
+        description="RISC-V Toolchain CLI Wrapper (runs inside Docker container)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -455,8 +325,7 @@ Examples:
   rv bin build/test.elf -o fw.bin     # Custom output name
   rv archs                            # List architectures
   rv version                          # Show toolchain version
-  rv shell                            # Container shell
-  rv build-image                      # Build Docker image
+  rv build-image                      # Show Docker build instructions
 
 Bare-metal build:
   rv build test.c --arch 32imac --bare        # Uses included linker script & startup
@@ -465,6 +334,10 @@ Bare-metal build:
 Interactive mode:
   rv                                  # Start interactive REPL
   Then type commands directly: build test.c --arch 32imac
+
+Running from host:
+  docker run --rm -v $(pwd):/src riscv-toolchain rv build test.c --arch 32imac
+  docker run --rm -it -v $(pwd):/src riscv-toolchain  # Interactive shell
         """
     )
     
@@ -524,12 +397,8 @@ Interactive mode:
     archs_parser = subparsers.add_parser("archs", help="List supported architectures")
     archs_parser.set_defaults(func=cmd_archs)
     
-    # shell command
-    shell_parser = subparsers.add_parser("shell", help="Start interactive shell in container")
-    shell_parser.set_defaults(func=cmd_shell)
-    
     # build-image command
-    build_image_parser = subparsers.add_parser("build-image", help="Build the Docker image")
+    build_image_parser = subparsers.add_parser("build-image", help="Show Docker build instructions")
     build_image_parser.set_defaults(func=cmd_build_image)
     
     return parser
@@ -546,37 +415,12 @@ def execute_command(parser, cmd_args: list[str]) -> int:
         parser.print_help()
         return 0
     
-    # Check if we're on the host or inside container
-    if is_inside_container():
-        # Inside container: run commands directly
-        try:
-            args.func(args)
-            return 0
-        except SystemExit as e:
-            return e.code if e.code else 0
-    else:
-        # On host: check Docker and delegate to container
-        if not check_docker_available():
-            print("Error: Docker is not installed or not in PATH.")
-            print("Please install Docker to use this tool.")
-            return 1
-        
-        # These commands run on host directly
-        if args.command in ["shell", "build-image"]:
-            try:
-                args.func(args)
-                return 0
-            except SystemExit as e:
-                return e.code if e.code else 0
-        else:
-            # Check if image exists
-            if not check_docker_image_exists():
-                print(f"Error: Docker image '{DOCKER_IMAGE}' not found.")
-                print("Build it first with: build-image")
-                return 1
-            
-            # Delegate to container
-            return run_in_docker(cmd_args)
+    # Run commands directly
+    try:
+        args.func(args)
+        return 0
+    except SystemExit as e:
+        return e.code if e.code else 0
 
 
 def print_repl_banner():
@@ -588,11 +432,10 @@ def print_repl_banner():
     print()
     print("Commands:")
     print("  build <file> --arch <arch>   Compile C to ELF")
+    print("  bin <file.elf>               Convert ELF to binary")
     print("  dump <file.elf> [--grep X]   Disassemble ELF")
     print("  archs                        List architectures")
     print("  version                      Show toolchain version")
-    print("  shell                        Container shell")
-    print("  build-image                  Build Docker image")
     print("  help                         Show full help")
     print("  exit / quit                  Exit REPL")
     print()
@@ -601,13 +444,6 @@ def print_repl_banner():
 def run_repl():
     """Run the interactive REPL."""
     parser = create_parser()
-    
-    # Check Docker availability upfront
-    if not is_inside_container():
-        if not check_docker_available():
-            print("Error: Docker is not installed or not in PATH.")
-            print("Please install Docker to use this tool.")
-            sys.exit(1)
     
     print_repl_banner()
     
