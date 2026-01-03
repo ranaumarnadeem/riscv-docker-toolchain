@@ -5,11 +5,14 @@ A portable, dockerized GNU Toolchain for RISC-V development. Supports RV32/RV64 
 ## Quick Start
 
 ```bash
-# Build the Docker image
-docker build -t riscv-toolchain .
+# Pull from Docker Hub (recommended)
+docker pull ranaumarnadeem/riscv-toolchain
+
+# Or build locally
+docker build -t ranaumarnadeem/riscv-toolchain .
 
 # Set up alias (add to ~/.bashrc or ~/.zshrc for permanent use)
-alias rv='docker run --rm -v "$(pwd):/src" riscv-toolchain rv'
+alias rv='docker run --rm -v "$(pwd):/src" ranaumarnadeem/riscv-toolchain rv'
 
 rv build examples/blink.c --arch 32imac
 rv dump build/blink.elf
@@ -18,14 +21,14 @@ rv bin build/blink.elf
 
 **Windows PowerShell:**
 ```powershell
-function rvc { docker run --rm -v "${PWD}:/src" riscv-toolchain rv $args }
+function rvc { docker run --rm -v "${PWD}:/src" ranaumarnadeem/riscv-toolchain rv $args }
 
 rvc build examples/blink.c --arch 32imac
 ```
 
 **Interactive mode:**
 ```bash
-docker run --rm -it -v "$(pwd):/src" riscv-toolchain
+docker run --rm -it -v "$(pwd):/src" ranaumarnadeem/riscv-toolchain
 rv build examples/blink.c --arch 32imac
 ```
 
