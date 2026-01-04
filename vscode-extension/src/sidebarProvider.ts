@@ -223,15 +223,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleOpenFolder() {
-        const folders = await vscode.window.showOpenDialog({
-            canSelectFiles: false,
-            canSelectFolders: true,
-            canSelectMany: false,
-            openLabel: 'Open Folder'
+        // Show options: change workspace or browse subfolder
+        const choice = await vscode.window.showQuickPick([
+            { label: 'Open Different Folder', description: 'Change the VS Code workspace folder', action: 'workspace' },
+            { label: 'Browse Subfolder', description: 'View files from a subfolder', action: 'subfolder' }
+        ], {
+            placeHolder: 'Choose an option'
         });
 
-        if (folders && folders.length > 0) {
-            await vscode.commands.executeCommand('vscode.openFolder', folders[0]);
+        if (!choice) {
+            return;
+        }
+
+        if (choice.action === 'workspace') {
+            // Open folder picker and switch workspace
+            const folders = await vscode.window.showOpenDialog({
+                canSelectFiles: false,
+                canSelectFolders: true,
+                canSelectMany: false,
+                openLabel: 'Open Folder as Workspace'
+            });
+
+            if (folders && folders.length > 0) {
+                // This will reload VS Code with the new folder
+                await vscode.commands.executeCommand('vscode.openFolder', folders[0], false);
+            }
+        } else {
+            // Just refresh the file tree - the workspace stays the same
+            // but user can navigate using the file tree
+            await this._sendFileTree();
+            vscode.window.showInformationMessage('Use the file tree to navigate. Click folders to expand them.');
         }
     }
 
@@ -488,6 +509,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
         .section-title .refresh-btn:hover { opacity: 1; }
         
+        /* Workspace Info */
+        .workspace-info {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+            padding: 4px 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
         /* File Tree Styles */
         .file-tree {
             background: var(--vscode-editor-background);
@@ -724,6 +755,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             background: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
         }
+        .workspace-bar {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 4px;
+        }
+        .workspace-bar button {
+            padding: 2px 6px;
+            font-size: 11px;
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .workspace-bar button:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
+        }
     </style>
 </head>
 <body>
@@ -731,6 +780,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <div class="section-title">
             Files
             <button class="refresh-btn" id="refreshBtn" title="Refresh">&#8635;</button>
+        </div>
+        <div class="workspace-bar">
+            <button id="changeFolderBtn" title="Open a different folder">Change Folder</button>
+            <span class="workspace-info" id="workspaceInfo" title="Docker mounts this folder as /src"></span>
         </div>
         <div class="file-tabs">
             <button class="file-tab active" data-filter="all">All</button>
@@ -940,6 +993,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({ command: 'getFiles' });
         });
 
+        document.getElementById('changeFolderBtn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'openFolder' });
+        });
+
         browseBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'selectFile' });
         });
@@ -1139,6 +1196,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'fileTree':
                     allFiles = message.files || [];
                     workspaceRoot = message.workspaceRoot || '';
+                    // Show workspace root in the info bar
+                    const wsInfo = document.getElementById('workspaceInfo');
+                    if (workspaceRoot) {
+                        const folderName = workspaceRoot.split(/[\\\\/]/).pop();
+                        wsInfo.textContent = 'Workspace: ' + folderName;
+                        wsInfo.title = workspaceRoot + ' (Docker mounts this as /src)';
+                    } else {
+                        wsInfo.textContent = '';
+                    }
                     if (message.noWorkspace) {
                         fileTree.innerHTML = '<div class="file-tree-empty">No folder open<br><button onclick="openFolder()">Open Folder</button></div>';
                     } else {

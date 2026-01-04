@@ -14,6 +14,13 @@ export function activate(context: vscode.ExtensionContext) {
     // Create Docker runner
     const dockerRunner = new DockerRunner(diagnosticCollection);
 
+    // Update workspace root when folders change
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            dockerRunner.updateWorkspaceRoot();
+        })
+    );
+
     // Register sidebar provider
     const sidebarProvider = new SidebarProvider(context.extensionUri, dockerRunner, context);
     context.subscriptions.push(

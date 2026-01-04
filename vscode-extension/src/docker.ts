@@ -24,10 +24,24 @@ export interface CommandResult {
 export class DockerRunner {
     private outputChannel: vscode.OutputChannel;
     private diagnosticCollection: vscode.DiagnosticCollection;
+    private workspaceRoot: string;
 
     constructor(diagnosticCollection: vscode.DiagnosticCollection) {
         this.outputChannel = vscode.window.createOutputChannel('RISC-V Toolchain');
         this.diagnosticCollection = diagnosticCollection;
+        // Cache workspace root at construction - this is what Docker will mount as /src
+        const folders = vscode.workspace.workspaceFolders;
+        this.workspaceRoot = folders && folders.length > 0 ? folders[0].uri.fsPath : '';
+    }
+
+    // Allow updating workspace root if folder changes
+    public updateWorkspaceRoot(): void {
+        const folders = vscode.workspace.workspaceFolders;
+        this.workspaceRoot = folders && folders.length > 0 ? folders[0].uri.fsPath : '';
+    }
+
+    public getWorkspaceRootPath(): string {
+        return this.workspaceRoot;
     }
 
     private getDockerImage(): string {
@@ -35,12 +49,9 @@ export class DockerRunner {
         return config.get('dockerImage', 'ranaumarnadeem/riscv-toolchain');
     }
 
-    private getWorkspaceRoot(): string | undefined {
-        const folders = vscode.workspace.workspaceFolders;
-        if (folders && folders.length > 0) {
-            return folders[0].uri.fsPath;
-        }
-        return undefined;
+    private getWorkspaceRoot(): string {
+        // Return the cached workspace root
+        return this.workspaceRoot;
     }
 
     private getDockerPath(filePath: string): string {
@@ -166,7 +177,19 @@ export class DockerRunner {
         this.outputChannel.show();
         this.diagnosticCollection.clear();
 
-        const workDir = this.getWorkspaceRoot() || path.dirname(filePath);
+        // Use cached workspace root - this is where Docker mounts /src
+        const workDir = this.workspaceRoot;
+        
+        if (!workDir) {
+            return {
+                success: false,
+                stdout: '',
+                stderr: 'Error: No workspace folder open. Please open a folder in VS Code.'
+            };
+        }
+
+        this.outputChannel.appendLine(`Workspace: ${workDir}`);
+        
         const relativePath = path.relative(workDir, filePath).replace(/\\/g, '/');
 
         const args = ['build', relativePath, '--arch', options.arch, '--opt', options.opt];
@@ -184,19 +207,25 @@ export class DockerRunner {
         }
 
         if (options.linkerScript) {
-            // Convert to relative path for Docker container
+            // Convert to relative path from workspace root for Docker container
             let linkerPath = options.linkerScript;
-            if (path.isAbsolute(linkerPath)) {
+            // Use workDir which is where Docker mounts, not a fresh call to getWorkspaceRoot
+            if (path.isAbsolute(linkerPath) && workDir) {
                 linkerPath = path.relative(workDir, linkerPath).replace(/\\/g, '/');
+            } else {
+                linkerPath = linkerPath.replace(/\\/g, '/');
             }
             args.push('--linker', linkerPath);
         }
 
         if (options.startupScript) {
-            // Convert to relative path for Docker container
+            // Convert to relative path from workspace root for Docker container
             let startupPath = options.startupScript;
-            if (path.isAbsolute(startupPath)) {
+            // Use workDir which is where Docker mounts
+            if (path.isAbsolute(startupPath) && workDir) {
                 startupPath = path.relative(workDir, startupPath).replace(/\\/g, '/');
+            } else {
+                startupPath = startupPath.replace(/\\/g, '/');
             }
             args.push('--startup', startupPath);
         }
