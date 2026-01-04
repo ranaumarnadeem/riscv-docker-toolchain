@@ -8,6 +8,10 @@ export interface BuildOptions {
     opt: string;
     bare: boolean;
     cflags?: string;
+    outputDir?: string;
+    linkerScript?: string;
+    startupScript?: string;
+    verbose?: boolean;
 }
 
 export interface CommandResult {
@@ -175,9 +179,28 @@ export class DockerRunner {
             args.push('--cflags', options.cflags);
         }
 
+        if (options.outputDir && options.outputDir !== 'build') {
+            args.push('--output', options.outputDir);
+        }
+
+        if (options.linkerScript) {
+            args.push('--linker', options.linkerScript);
+        }
+
+        if (options.startupScript) {
+            args.push('--startup', options.startupScript);
+        }
+
+        if (options.verbose) {
+            args.push('--verbose');
+        }
+
         this.outputChannel.appendLine(`Building ${relativePath}...`);
         this.outputChannel.appendLine(`Architecture: ${options.arch}, Optimization: ${options.opt}, Bare-metal: ${options.bare}`);
-        this.outputChannel.appendLine('─'.repeat(60));
+        if (options.outputDir) {
+            this.outputChannel.appendLine(`Output: ${options.outputDir}/`);
+        }
+        this.outputChannel.appendLine('-'.repeat(60));
 
         const result = await this.runDockerCommand(args, workDir);
 
@@ -190,9 +213,9 @@ export class DockerRunner {
         }
 
         if (result.success) {
-            vscode.window.showInformationMessage('✅ Build successful!');
+            vscode.window.showInformationMessage('Build successful!');
         } else if (!result.error?.includes('Docker is not running')) {
-            vscode.window.showErrorMessage('❌ Build failed. Check output for details.');
+            vscode.window.showErrorMessage('Build failed. Check output for details.');
         }
 
         return result;

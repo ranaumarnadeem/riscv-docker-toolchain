@@ -97,16 +97,58 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleBuild(message: any) {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            this._sendToWebview({
+                command: 'buildComplete',
+                success: false,
+                output: 'No workspace folder open'
+            });
+            return;
+        }
+
+        // Create output directories
+        const outputDir = message.outputDir || 'build';
+        const logDir = message.logDir || 'logs';
+        const outputPath = path.join(workspaceRoot, outputDir);
+        const logPath = path.join(workspaceRoot, logDir);
+
+        try {
+            if (!fs.existsSync(outputPath)) {
+                fs.mkdirSync(outputPath, { recursive: true });
+            }
+            if (message.saveLogs && !fs.existsSync(logPath)) {
+                fs.mkdirSync(logPath, { recursive: true });
+            }
+        } catch (e) {
+            // Continue even if directory creation fails
+        }
+
         const options: BuildOptions = {
             arch: message.arch,
             opt: message.opt,
             bare: message.bare,
-            cflags: message.cflags
+            cflags: message.cflags,
+            outputDir: outputDir,
+            linkerScript: message.linkerScript,
+            startupScript: message.startupScript,
+            verbose: message.verboseLog
         };
 
         this._sendToWebview({ command: 'buildStarted' });
 
         const result = await this._dockerRunner.build(message.file, options);
+
+        // Save logs if enabled
+        if (message.saveLogs) {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const logFile = path.join(logPath, `build-${timestamp}.log`);
+            try {
+                fs.writeFileSync(logFile, result.stdout + result.stderr);
+            } catch (e) {
+                // Ignore log write errors
+            }
+        }
 
         this._sendToWebview({
             command: 'buildComplete',
@@ -306,6 +348,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this._context.workspaceState.update('riscv-arch', message.arch);
         this._context.workspaceState.update('riscv-opt', message.opt);
         this._context.workspaceState.update('riscv-bare', message.bare);
+        this._context.workspaceState.update('riscv-outputDir', message.outputDir);
+        this._context.workspaceState.update('riscv-logDir', message.logDir);
+        this._context.workspaceState.update('riscv-verboseLog', message.verboseLog);
+        this._context.workspaceState.update('riscv-saveLogs', message.saveLogs);
+        this._context.workspaceState.update('riscv-linkerScript', message.linkerScript);
+        this._context.workspaceState.update('riscv-startupScript', message.startupScript);
+        this._context.workspaceState.update('riscv-automationScript', message.automationScript);
     }
 
     private _sendSettings() {
@@ -314,7 +363,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             command: 'settings',
             arch: this._context.workspaceState.get('riscv-arch', config.get('defaultArch', '32imac')),
             opt: this._context.workspaceState.get('riscv-opt', config.get('defaultOptimization', 'O2')),
-            bare: this._context.workspaceState.get('riscv-bare', config.get('bareMetal', false))
+            bare: this._context.workspaceState.get('riscv-bare', config.get('bareMetal', false)),
+            outputDir: this._context.workspaceState.get('riscv-outputDir', ''),
+            logDir: this._context.workspaceState.get('riscv-logDir', ''),
+            verboseLog: this._context.workspaceState.get('riscv-verboseLog', false),
+            saveLogs: this._context.workspaceState.get('riscv-saveLogs', false),
+            linkerScript: this._context.workspaceState.get('riscv-linkerScript', ''),
+            startupScript: this._context.workspaceState.get('riscv-startupScript', ''),
+            automationScript: this._context.workspaceState.get('riscv-automationScript', '')
         });
     }
 
@@ -493,22 +549,39 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .filter-row { display: flex; gap: 6px; margin-bottom: 8px; }
         .filter-row input { flex: 1; margin: 0; }
         
-        /* Output */
-        .output {
+        /* Collapsible */
+        .collapsible {
             background: var(--vscode-editor-background);
             border: 1px solid var(--vscode-input-border);
             border-radius: 4px;
-            padding: 8px;
-            font-family: var(--vscode-editor-font-family);
-            font-size: 11px;
-            line-height: 1.4;
-            max-height: 250px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
+            margin-bottom: 8px;
         }
-        .output.success { border-color: var(--vscode-charts-green); }
-        .output.error { border-color: var(--vscode-errorForeground); }
+        .collapsible-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 500;
+            user-select: none;
+        }
+        .collapsible-header:hover { background: var(--vscode-list-hoverBackground); }
+        .collapsible-header .arrow {
+            font-size: 10px;
+            transition: transform 0.2s;
+        }
+        .collapsible.open .arrow { transform: rotate(90deg); }
+        .collapsible-content {
+            display: none;
+            padding: 8px 10px;
+            border-top: 1px solid var(--vscode-input-border);
+        }
+        .collapsible.open .collapsible-content { display: block; }
+        .adv-row { margin-bottom: 8px; }
+        .adv-row label { font-size: 10px; margin-bottom: 2px; }
+        .adv-row input[type="text"] { margin-bottom: 0; font-size: 11px; }
+        .adv-hint { font-size: 9px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
         
         /* Status */
         .status {
@@ -642,8 +715,49 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div class="section">
-        <div class="section-title">Output</div>
-        <div class="output" id="output">Select a file and click Build.</div>
+        <div class="collapsible" id="advancedSettings">
+            <div class="collapsible-header" onclick="toggleAdvanced()">
+                <span>Advanced Settings</span>
+                <span class="arrow">></span>
+            </div>
+            <div class="collapsible-content">
+                <div class="adv-row">
+                    <label for="outputDir">Output Directory</label>
+                    <input type="text" id="outputDir" placeholder="build (default)">
+                    <div class="adv-hint">ELF, binary, and dump files location</div>
+                </div>
+                <div class="adv-row">
+                    <label for="logDir">Log Directory</label>
+                    <input type="text" id="logDir" placeholder="logs (default)">
+                    <div class="adv-hint">Build logs and verbose output</div>
+                </div>
+                <div class="adv-row">
+                    <div class="checkbox-row">
+                        <input type="checkbox" id="verboseLog">
+                        <label for="verboseLog">Verbose Logging</label>
+                    </div>
+                </div>
+                <div class="adv-row">
+                    <div class="checkbox-row">
+                        <input type="checkbox" id="saveLogs">
+                        <label for="saveLogs">Save Build Logs</label>
+                    </div>
+                </div>
+                <div class="adv-row">
+                    <label for="linkerScript">Linker Script Path</label>
+                    <input type="text" id="linkerScript" placeholder="Optional (.ld)">
+                </div>
+                <div class="adv-row">
+                    <label for="startupScript">Startup Script Path</label>
+                    <input type="text" id="startupScript" placeholder="Optional (crt0.S)">
+                </div>
+                <div class="adv-row">
+                    <label for="automationScript">Automation Script</label>
+                    <input type="text" id="automationScript" placeholder="Optional (Makefile, .sh, .bat)">
+                    <div class="adv-hint">Custom build/automation script</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -662,16 +776,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         const buildBtn = document.getElementById('buildBtn');
         const dumpBtn = document.getElementById('dumpBtn');
         const binBtn = document.getElementById('binBtn');
-        const output = document.getElementById('output');
         const statusContainer = document.getElementById('statusContainer');
         const status = document.getElementById('status');
         const statusIcon = document.getElementById('statusIcon');
         const statusText = document.getElementById('statusText');
         const fileTabs = document.querySelectorAll('.file-tab');
+        
+        // Advanced settings elements
+        const outputDir = document.getElementById('outputDir');
+        const logDir = document.getElementById('logDir');
+        const verboseLog = document.getElementById('verboseLog');
+        const saveLogs = document.getElementById('saveLogs');
+        const linkerScript = document.getElementById('linkerScript');
+        const startupScript = document.getElementById('startupScript');
+        const automationScript = document.getElementById('automationScript');
 
         let currentFilter = 'all';
         let allFiles = [];
         let workspaceRoot = '';
+        
+        // Toggle advanced settings
+        function toggleAdvanced() {
+            document.getElementById('advancedSettings').classList.toggle('open');
+        }
+        window.toggleAdvanced = toggleAdvanced;
 
         // Request files and settings on load
         vscode.postMessage({ command: 'getFiles' });
@@ -806,7 +934,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 file: filePath.value,
                 arch: arch.value,
                 opt: opt.value,
-                bare: bare.checked
+                bare: bare.checked,
+                outputDir: outputDir.value || 'build',
+                logDir: logDir.value || 'logs',
+                verboseLog: verboseLog.checked,
+                saveLogs: saveLogs.checked,
+                linkerScript: linkerScript.value,
+                startupScript: startupScript.value,
+                automationScript: automationScript.value
             });
         });
 
@@ -821,7 +956,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             if (elfPath.match(/\\.(c|cpp|cc|cxx)$/i)) {
                 const baseName = elfPath.split(/[\\\\/]/).pop().replace(/\\.(c|cpp|cc|cxx)$/i, '');
                 const dir = elfPath.substring(0, elfPath.lastIndexOf(elfPath.includes('/') ? '/' : '\\\\'));
-                elfPath = dir + (elfPath.includes('/') ? '/' : '\\\\') + 'build' + (elfPath.includes('/') ? '/' : '\\\\') + baseName + '.elf';
+                const outDir = outputDir.value || 'build';
+                elfPath = dir + (elfPath.includes('/') ? '/' : '\\\\') + outDir + (elfPath.includes('/') ? '/' : '\\\\') + baseName + '.elf';
             }
             
             vscode.postMessage({
@@ -842,7 +978,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             if (elfPath.match(/\\.(c|cpp|cc|cxx)$/i)) {
                 const baseName = elfPath.split(/[\\\\/]/).pop().replace(/\\.(c|cpp|cc|cxx)$/i, '');
                 const dir = elfPath.substring(0, elfPath.lastIndexOf(elfPath.includes('/') ? '/' : '\\\\'));
-                elfPath = dir + (elfPath.includes('/') ? '/' : '\\\\') + 'build' + (elfPath.includes('/') ? '/' : '\\\\') + baseName + '.elf';
+                const outDir = outputDir.value || 'build';
+                elfPath = dir + (elfPath.includes('/') ? '/' : '\\\\') + outDir + (elfPath.includes('/') ? '/' : '\\\\') + baseName + '.elf';
             }
             
             vscode.postMessage({
@@ -856,7 +993,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 command: 'saveSettings',
                 arch: arch.value,
                 opt: opt.value,
-                bare: bare.checked
+                bare: bare.checked,
+                outputDir: outputDir.value || 'build',
+                logDir: logDir.value || 'logs',
+                verboseLog: verboseLog.checked,
+                saveLogs: saveLogs.checked,
+                linkerScript: linkerScript.value,
+                startupScript: startupScript.value,
+                automationScript: automationScript.value
             });
         }
 
@@ -890,22 +1034,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     arch.value = message.arch;
                     opt.value = message.opt;
                     bare.checked = message.bare;
+                    outputDir.value = message.outputDir || '';
+                    logDir.value = message.logDir || '';
+                    verboseLog.checked = message.verboseLog || false;
+                    saveLogs.checked = message.saveLogs || false;
+                    linkerScript.value = message.linkerScript || '';
+                    startupScript.value = message.startupScript || '';
+                    automationScript.value = message.automationScript || '';
                     break;
                 case 'buildStarted':
                     showStatus('building', '', 'Building...');
-                    output.textContent = 'Building...';
-                    output.className = 'output';
                     setButtonsDisabled(true);
                     break;
                 case 'buildComplete':
                     if (message.success) {
                         showStatus('success', '[OK]', 'Build successful!');
-                        output.className = 'output success';
                     } else {
                         showStatus('error', '[X]', 'Build failed');
-                        output.className = 'output error';
                     }
-                    output.textContent = message.output || 'No output';
                     setButtonsDisabled(false);
                     break;
                 case 'dumpStarted':
@@ -917,12 +1063,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'binComplete':
                     if (message.success) {
                         showStatus('success', '[OK]', 'Done!');
-                        output.className = 'output success';
                     } else {
                         showStatus('error', '[X]', 'Failed');
-                        output.className = 'output error';
                     }
-                    output.textContent = message.output || 'No output';
                     setButtonsDisabled(false);
                     break;
             }
