@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { DockerRunner, BuildOptions } from './docker';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
@@ -44,7 +46,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     await this._handleBin(message);
                     break;
                 case 'selectFile':
-                    await this._handleSelectFile();
+                    await this._handleSelectFile(message.fileType);
+                    break;
+                case 'openFolder':
+                    await this._handleOpenFolder();
+                    break;
+                case 'getFiles':
+                    await this._sendFileTree();
                     break;
                 case 'getActiveFile':
                     this._sendActiveFile();
@@ -55,14 +63,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'getSettings':
                     this._sendSettings();
                     break;
+                case 'selectFileFromTree':
+                    this._sendToWebview({
+                        command: 'fileSelected',
+                        file: message.file,
+                        fileName: path.basename(message.file)
+                    });
+                    break;
             }
         });
 
-        // Send active file when view becomes visible
+        // Send files when view becomes visible
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
                 this._sendActiveFile();
                 this._sendSettings();
+                this._sendFileTree();
             }
         });
 
@@ -72,6 +88,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 this._sendActiveFile();
             }
         });
+
+        // Watch for file changes
+        const watcher = vscode.workspace.createFileSystemWatcher('**/*.{c,cpp,cc,h,hpp,elf,bin,S,s}');
+        watcher.onDidCreate(() => this._sendFileTree());
+        watcher.onDidDelete(() => this._sendFileTree());
+        watcher.onDidChange(() => this._sendFileTree());
     }
 
     private async _handleBuild(message: any) {
@@ -91,6 +113,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             success: result.success,
             output: result.stdout + result.stderr
         });
+
+        // Refresh file tree to show new ELF
+        this._sendFileTree();
     }
 
     private async _handleDump(message: any) {
@@ -115,24 +140,150 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             success: result.success,
             output: result.stdout + result.stderr
         });
+
+        // Refresh file tree to show new binary
+        this._sendFileTree();
     }
 
-    private async _handleSelectFile() {
+    private async _handleSelectFile(fileType?: string) {
+        let filters: { [key: string]: string[] };
+        
+        if (fileType === 'elf') {
+            filters = { 'ELF Files': ['elf'] };
+        } else if (fileType === 'source') {
+            filters = { 'C/C++ Source': ['c', 'cpp', 'cc', 'cxx'] };
+        } else {
+            filters = {
+                'All Supported': ['c', 'cpp', 'cc', 'cxx', 'elf', 'bin', 'S', 's'],
+                'C/C++ Source': ['c', 'cpp', 'cc', 'cxx'],
+                'ELF Files': ['elf'],
+                'Binary Files': ['bin'],
+                'Assembly': ['S', 's']
+            };
+        }
+
         const files = await vscode.window.showOpenDialog({
             canSelectFiles: true,
             canSelectMany: false,
-            filters: {
-                'C/C++ Source': ['c', 'cpp', 'cc', 'cxx'],
-                'ELF Files': ['elf'],
-                'All Files': ['*']
-            }
+            filters
         });
 
         if (files && files.length > 0) {
             this._sendToWebview({
                 command: 'fileSelected',
-                file: files[0].fsPath
+                file: files[0].fsPath,
+                fileName: path.basename(files[0].fsPath)
             });
+        }
+    }
+
+    private async _handleOpenFolder() {
+        const folders = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: 'Open Folder'
+        });
+
+        if (folders && folders.length > 0) {
+            await vscode.commands.executeCommand('vscode.openFolder', folders[0]);
+        }
+    }
+
+    private async _sendFileTree() {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            this._sendToWebview({
+                command: 'fileTree',
+                files: [],
+                noWorkspace: true
+            });
+            return;
+        }
+
+        const files = await this._scanDirectory(workspaceRoot);
+        this._sendToWebview({
+            command: 'fileTree',
+            files,
+            workspaceRoot
+        });
+    }
+
+    private async _scanDirectory(dir: string, relativePath: string = ''): Promise<any[]> {
+        const entries: any[] = [];
+        const validExtensions = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.elf', '.bin', '.S', '.s'];
+
+        try {
+            const items = fs.readdirSync(dir);
+            
+            for (const item of items) {
+                // Skip hidden folders and node_modules
+                if (item.startsWith('.') || item === 'node_modules' || item === 'out') {
+                    continue;
+                }
+
+                const fullPath = path.join(dir, item);
+                const relPath = path.join(relativePath, item);
+                
+                try {
+                    const stat = fs.statSync(fullPath);
+                    
+                    if (stat.isDirectory()) {
+                        const children = await this._scanDirectory(fullPath, relPath);
+                        if (children.length > 0) {
+                            entries.push({
+                                name: item,
+                                path: fullPath,
+                                relativePath: relPath,
+                                type: 'folder',
+                                children
+                            });
+                        }
+                    } else {
+                        const ext = path.extname(item).toLowerCase();
+                        if (validExtensions.includes(ext) || validExtensions.includes(path.extname(item))) {
+                            entries.push({
+                                name: item,
+                                path: fullPath,
+                                relativePath: relPath,
+                                type: this._getFileType(ext)
+                            });
+                        }
+                    }
+                } catch (e) {
+                    // Skip files we can't access
+                }
+            }
+        } catch (e) {
+            // Skip directories we can't read
+        }
+
+        // Sort: folders first, then by name
+        return entries.sort((a, b) => {
+            if (a.type === 'folder' && b.type !== 'folder') return -1;
+            if (a.type !== 'folder' && b.type === 'folder') return 1;
+            return a.name.localeCompare(b.name);
+        });
+    }
+
+    private _getFileType(ext: string): string {
+        switch (ext.toLowerCase()) {
+            case '.c':
+            case '.cpp':
+            case '.cc':
+            case '.cxx':
+                return 'source';
+            case '.h':
+            case '.hpp':
+                return 'header';
+            case '.elf':
+                return 'elf';
+            case '.bin':
+                return 'binary';
+            case '.s':
+                return 'assembly';
+            default:
+                return 'file';
         }
     }
 
@@ -140,11 +291,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
             const doc = editor.document;
-            if (doc.languageId === 'c' || doc.languageId === 'cpp') {
+            const ext = path.extname(doc.fileName).toLowerCase();
+            if (['.c', '.cpp', '.cc', '.cxx', '.elf', '.bin', '.s'].includes(ext)) {
                 this._sendToWebview({
                     command: 'activeFile',
                     file: doc.uri.fsPath,
-                    fileName: doc.fileName.split(/[\\/]/).pop()
+                    fileName: path.basename(doc.fileName)
                 });
             }
         }
@@ -180,33 +332,80 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RISC-V Toolchain</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
             color: var(--vscode-foreground);
             background: var(--vscode-sideBar-background);
-            padding: 12px;
+            padding: 8px;
         }
-        .section {
-            margin-bottom: 16px;
-        }
+        .section { margin-bottom: 12px; }
         .section-title {
             font-weight: 600;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             color: var(--vscode-foreground);
             font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
-        .file-picker {
+        .section-title .refresh-btn {
+            background: none;
+            border: none;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            opacity: 0.7;
+            font-size: 12px;
+        }
+        .section-title .refresh-btn:hover { opacity: 1; }
+        
+        /* File Tree Styles */
+        .file-tree {
+            background: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        .file-tree-empty {
+            padding: 12px;
+            text-align: center;
+            color: var(--vscode-descriptionForeground);
+        }
+        .file-tree-empty button {
+            margin-top: 8px;
+            padding: 6px 12px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .tree-item {
+            display: flex;
+            align-items: center;
+            padding: 4px 8px;
+            cursor: pointer;
+            gap: 6px;
+        }
+        .tree-item:hover { background: var(--vscode-list-hoverBackground); }
+        .tree-item.selected { background: var(--vscode-list-activeSelectionBackground); }
+        .tree-item.folder { font-weight: 500; }
+        .tree-item .icon { width: 16px; text-align: center; }
+        .tree-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tree-children { padding-left: 16px; }
+        .tree-children.collapsed { display: none; }
+        
+        /* Selected File Display */
+        .selected-file {
             display: flex;
             gap: 8px;
             align-items: center;
+            margin-bottom: 8px;
         }
         .file-name {
             flex: 1;
@@ -216,110 +415,85 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             border-radius: 4px;
             color: var(--vscode-input-foreground);
             font-size: 12px;
-            white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .file-name.placeholder {
             color: var(--vscode-input-placeholderForeground);
             font-style: italic;
         }
         .browse-btn {
-            padding: 6px 12px;
+            padding: 6px 10px;
             background: var(--vscode-button-secondaryBackground);
             color: var(--vscode-button-secondaryForeground);
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 11px;
         }
-        .browse-btn:hover {
-            background: var(--vscode-button-secondaryHoverBackground);
-        }
+        .browse-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+        
+        /* Form elements */
         label {
             display: block;
             margin-bottom: 4px;
-            font-size: 12px;
+            font-size: 11px;
             color: var(--vscode-descriptionForeground);
         }
         select, input[type="text"] {
             width: 100%;
-            padding: 6px 8px;
+            padding: 5px 8px;
             background: var(--vscode-input-background);
             border: 1px solid var(--vscode-input-border);
             border-radius: 4px;
             color: var(--vscode-input-foreground);
             font-size: 12px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
-        select:focus, input:focus {
-            outline: 1px solid var(--vscode-focusBorder);
-        }
+        select:focus, input:focus { outline: 1px solid var(--vscode-focusBorder); }
         .checkbox-row {
             display: flex;
             align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
+            gap: 6px;
+            margin-bottom: 6px;
         }
-        .checkbox-row input[type="checkbox"] {
-            width: auto;
-            margin: 0;
-        }
-        .checkbox-row label {
-            margin: 0;
-            cursor: pointer;
-        }
-        .button-group {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
+        .checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
+        .checkbox-row label { margin: 0; cursor: pointer; }
+        
+        /* Buttons */
+        .button-group { display: flex; gap: 6px; flex-wrap: wrap; }
         .btn {
             flex: 1;
-            min-width: 70px;
-            padding: 8px 12px;
+            min-width: 60px;
+            padding: 7px 10px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 500;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 6px;
+            gap: 4px;
         }
         .btn-primary {
             background: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
         }
-        .btn-primary:hover {
-            background: var(--vscode-button-hoverBackground);
-        }
+        .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
         .btn-secondary {
             background: var(--vscode-button-secondaryBackground);
             color: var(--vscode-button-secondaryForeground);
         }
-        .btn-secondary:hover {
-            background: var(--vscode-button-secondaryHoverBackground);
-        }
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .filter-row {
-            display: flex;
-            gap: 8px;
-        }
-        .filter-row input {
-            flex: 1;
-            margin: 0;
-        }
-        .filter-row button {
-            padding: 6px 12px;
-        }
-        .output-container {
-            margin-top: 12px;
-        }
+        .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        /* Filter */
+        .filter-row { display: flex; gap: 6px; margin-bottom: 8px; }
+        .filter-row input { flex: 1; margin: 0; }
+        
+        /* Output */
         .output {
             background: var(--vscode-editor-background);
             border: 1px solid var(--vscode-input-border);
@@ -328,60 +502,80 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             font-family: var(--vscode-editor-font-family);
             font-size: 11px;
             line-height: 1.4;
-            max-height: 300px;
+            max-height: 250px;
             overflow-y: auto;
             white-space: pre-wrap;
             word-break: break-all;
         }
-        .output.success {
-            border-color: var(--vscode-charts-green);
-        }
-        .output.error {
-            border-color: var(--vscode-errorForeground);
-        }
+        .output.success { border-color: var(--vscode-charts-green); }
+        .output.error { border-color: var(--vscode-errorForeground); }
+        
+        /* Status */
         .status {
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 8px;
+            padding: 6px 8px;
             border-radius: 4px;
-            margin-bottom: 12px;
-            font-size: 12px;
+            margin-bottom: 8px;
+            font-size: 11px;
         }
-        .status.success {
-            background: rgba(40, 167, 69, 0.1);
-            color: var(--vscode-charts-green);
-        }
-        .status.error {
-            background: rgba(220, 53, 69, 0.1);
-            color: var(--vscode-errorForeground);
-        }
-        .status.building {
-            background: rgba(0, 122, 204, 0.1);
-            color: var(--vscode-textLink-foreground);
-        }
+        .status.success { background: rgba(40, 167, 69, 0.1); color: var(--vscode-charts-green); }
+        .status.error { background: rgba(220, 53, 69, 0.1); color: var(--vscode-errorForeground); }
+        .status.building { background: rgba(0, 122, 204, 0.1); color: var(--vscode-textLink-foreground); }
         .spinner {
-            width: 14px;
-            height: 14px;
+            width: 12px; height: 12px;
             border: 2px solid transparent;
             border-top-color: currentColor;
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .hidden { display: none !important; }
+        
+        /* Tabs for file types */
+        .file-tabs {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 6px;
         }
-        .hidden {
-            display: none !important;
+        .file-tab {
+            padding: 4px 8px;
+            font-size: 10px;
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .file-tab.active {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
         }
     </style>
 </head>
 <body>
     <div class="section">
-        <div class="section-title">Source File</div>
-        <div class="file-picker">
-            <div class="file-name placeholder" id="fileName">No file selected</div>
-            <button class="browse-btn" id="browseBtn">Browse</button>
+        <div class="section-title">
+            Files
+            <button class="refresh-btn" id="refreshBtn" title="Refresh">&#8635;</button>
+        </div>
+        <div class="file-tabs">
+            <button class="file-tab active" data-filter="all">All</button>
+            <button class="file-tab" data-filter="source">Source</button>
+            <button class="file-tab" data-filter="elf">ELF</button>
+            <button class="file-tab" data-filter="binary">Binary</button>
+        </div>
+        <div class="file-tree" id="fileTree">
+            <div class="file-tree-empty">Loading...</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Selected File</div>
+        <div class="selected-file">
+            <div class="file-name placeholder" id="fileName">Click a file above</div>
+            <button class="browse-btn" id="browseBtn">...</button>
         </div>
         <input type="hidden" id="filePath" value="">
     </div>
@@ -391,56 +585,52 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <label for="arch">Architecture</label>
         <select id="arch">
             <optgroup label="32-bit">
-                <option value="32i">32i - Base integer</option>
-                <option value="32im">32im - + Multiply</option>
-                <option value="32ima">32ima - + Atomic</option>
-                <option value="32imac" selected>32imac - + Compressed</option>
-                <option value="32imafc">32imafc - + Float</option>
-                <option value="32imafdc">32imafdc - + Double</option>
+                <option value="32i">32i</option>
+                <option value="32im">32im</option>
+                <option value="32ima">32ima</option>
+                <option value="32imac" selected>32imac</option>
+                <option value="32imafc">32imafc</option>
+                <option value="32imafdc">32imafdc</option>
             </optgroup>
             <optgroup label="64-bit">
-                <option value="64i">64i - Base integer</option>
-                <option value="64im">64im - + Multiply</option>
-                <option value="64ima">64ima - + Atomic</option>
-                <option value="64imac">64imac - + Compressed</option>
-                <option value="64imafc">64imafc - + Float</option>
-                <option value="64imafdc">64imafdc - + Double</option>
+                <option value="64i">64i</option>
+                <option value="64im">64im</option>
+                <option value="64imac">64imac</option>
+                <option value="64imafdc">64imafdc</option>
             </optgroup>
             <optgroup label="Custom">
-                <option value="32imc_zba_zbb">32imc_zba_zbb - Bit manipulation</option>
-                <option value="64imac_zba">64imac_zba - Address gen</option>
+                <option value="32imc_zba_zbb">32imc_zba_zbb</option>
+                <option value="64imac_zba">64imac_zba</option>
             </optgroup>
         </select>
 
         <label for="opt">Optimization</label>
         <select id="opt">
-            <option value="O0">O0 - None (debug)</option>
-            <option value="O1">O1 - Basic</option>
+            <option value="O0">O0 - Debug</option>
             <option value="O2" selected>O2 - Standard</option>
             <option value="O3">O3 - Aggressive</option>
             <option value="Os">Os - Size</option>
-            <option value="Oz">Oz - Aggressive size</option>
         </select>
 
         <div class="checkbox-row">
             <input type="checkbox" id="bare">
-            <label for="bare">Bare-metal (no libc)</label>
+            <label for="bare">Bare-metal</label>
         </div>
     </div>
 
     <div class="section">
         <div class="section-title">Actions</div>
         <div class="button-group">
-            <button class="btn btn-primary" id="buildBtn">🔨 Build</button>
-            <button class="btn btn-secondary" id="dumpBtn">📄 Dump</button>
-            <button class="btn btn-secondary" id="binBtn">💾 Binary</button>
+            <button class="btn btn-primary" id="buildBtn">Build</button>
+            <button class="btn btn-secondary" id="dumpBtn">Dump</button>
+            <button class="btn btn-secondary" id="binBtn">Binary</button>
         </div>
     </div>
 
     <div class="section">
-        <div class="section-title">Filter (for Dump)</div>
+        <div class="section-title">Filter (Dump)</div>
         <div class="filter-row">
-            <input type="text" id="grep" placeholder="e.g., clz, mul, amo...">
+            <input type="text" id="grep" placeholder="clz, mul, amo...">
         </div>
     </div>
 
@@ -451,18 +641,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         </div>
     </div>
 
-    <div class="output-container">
+    <div class="section">
         <div class="section-title">Output</div>
-        <div class="output" id="output">Ready. Select a .c file and click Build.</div>
+        <div class="output" id="output">Select a file and click Build.</div>
     </div>
 
     <script>
         const vscode = acquireVsCodeApi();
         
         // Elements
+        const fileTree = document.getElementById('fileTree');
         const fileName = document.getElementById('fileName');
         const filePath = document.getElementById('filePath');
         const browseBtn = document.getElementById('browseBtn');
+        const refreshBtn = document.getElementById('refreshBtn');
         const arch = document.getElementById('arch');
         const opt = document.getElementById('opt');
         const bare = document.getElementById('bare');
@@ -475,19 +667,137 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         const status = document.getElementById('status');
         const statusIcon = document.getElementById('statusIcon');
         const statusText = document.getElementById('statusText');
+        const fileTabs = document.querySelectorAll('.file-tab');
 
-        // Request active file and settings on load
-        vscode.postMessage({ command: 'getActiveFile' });
+        let currentFilter = 'all';
+        let allFiles = [];
+        let workspaceRoot = '';
+
+        // Request files and settings on load
+        vscode.postMessage({ command: 'getFiles' });
         vscode.postMessage({ command: 'getSettings' });
 
-        // Event handlers
+        // File tab filters
+        fileTabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                fileTabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                currentFilter = tab.dataset.filter;
+                renderFileTree(allFiles);
+            });
+        });
+
+        refreshBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'getFiles' });
+        });
+
         browseBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'selectFile' });
         });
 
+        // Render file tree
+        function renderFileTree(files) {
+            if (!files || files.length === 0) {
+                fileTree.innerHTML = '<div class="file-tree-empty">No files found<br><button onclick="openFolder()">Open Folder</button></div>';
+                return;
+            }
+
+            const filtered = filterFiles(files);
+            if (filtered.length === 0) {
+                fileTree.innerHTML = '<div class="file-tree-empty">No matching files</div>';
+                return;
+            }
+
+            fileTree.innerHTML = renderTreeItems(filtered);
+            
+            // Add click handlers
+            fileTree.querySelectorAll('.tree-item').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    const path = item.dataset.path;
+                    const type = item.dataset.type;
+                    
+                    if (type === 'folder') {
+                        const children = item.nextElementSibling;
+                        if (children && children.classList.contains('tree-children')) {
+                            children.classList.toggle('collapsed');
+                            const icon = item.querySelector('.icon');
+                            icon.textContent = children.classList.contains('collapsed') ? '+' : '-';
+                        }
+                    } else {
+                        // Select file
+                        fileTree.querySelectorAll('.tree-item').forEach(i => i.classList.remove('selected'));
+                        item.classList.add('selected');
+                        vscode.postMessage({ command: 'selectFileFromTree', file: path });
+                    }
+                });
+            });
+        }
+
+        function filterFiles(files) {
+            if (currentFilter === 'all') return files;
+            
+            return files.reduce((acc, file) => {
+                if (file.type === 'folder') {
+                    const children = filterFiles(file.children);
+                    if (children.length > 0) {
+                        acc.push({ ...file, children });
+                    }
+                } else if (
+                    (currentFilter === 'source' && (file.type === 'source' || file.type === 'header')) ||
+                    (currentFilter === 'elf' && file.type === 'elf') ||
+                    (currentFilter === 'binary' && file.type === 'binary')
+                ) {
+                    acc.push(file);
+                }
+                return acc;
+            }, []);
+        }
+
+        function renderTreeItems(files, level = 0) {
+            return files.map(file => {
+                const icon = getFileIcon(file.type);
+                if (file.type === 'folder') {
+                    return \`
+                        <div class="tree-item folder" data-path="\${file.path}" data-type="folder">
+                            <span class="icon">-</span>
+                            <span class="name">\${file.name}</span>
+                        </div>
+                        <div class="tree-children">\${renderTreeItems(file.children, level + 1)}</div>
+                    \`;
+                } else {
+                    return \`
+                        <div class="tree-item" data-path="\${file.path}" data-type="\${file.type}">
+                            <span class="icon">\${icon}</span>
+                            <span class="name">\${file.name}</span>
+                        </div>
+                    \`;
+                }
+            }).join('');
+        }
+
+        function getFileIcon(type) {
+            switch(type) {
+                case 'source': return 'C';
+                case 'header': return 'H';
+                case 'elf': return 'E';
+                case 'binary': return 'B';
+                case 'assembly': return 'S';
+                default: return '*';
+            }
+        }
+
+        function openFolder() {
+            vscode.postMessage({ command: 'openFolder' });
+        }
+
+        // Build handlers
         buildBtn.addEventListener('click', () => {
             if (!filePath.value) {
-                showStatus('error', '❌', 'No file selected');
+                showStatus('error', 'X', 'No file selected');
+                return;
+            }
+            if (!filePath.value.match(/\\.(c|cpp|cc|cxx)$/i)) {
+                showStatus('error', 'X', 'Select a C/C++ source file');
                 return;
             }
             saveSettings();
@@ -501,12 +811,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
 
         dumpBtn.addEventListener('click', () => {
-            // For dump, use ELF file (replace .c with .elf in build/)
             let elfPath = filePath.value;
-            if (elfPath.endsWith('.c') || elfPath.endsWith('.cpp')) {
-                const baseName = elfPath.split(/[\\/]/).pop().replace(/\\.(c|cpp)$/, '');
-                elfPath = elfPath.replace(/[^\\/]+$/, 'build/' + baseName + '.elf');
+            if (!elfPath) {
+                showStatus('error', 'X', 'No file selected');
+                return;
             }
+            
+            // If source file selected, find corresponding ELF
+            if (elfPath.match(/\\.(c|cpp|cc|cxx)$/i)) {
+                const baseName = elfPath.split(/[\\\\/]/).pop().replace(/\\.(c|cpp|cc|cxx)$/i, '');
+                const dir = elfPath.substring(0, elfPath.lastIndexOf(elfPath.includes('/') ? '/' : '\\\\'));
+                elfPath = dir + (elfPath.includes('/') ? '/' : '\\\\') + 'build' + (elfPath.includes('/') ? '/' : '\\\\') + baseName + '.elf';
+            }
+            
             vscode.postMessage({
                 command: 'dump',
                 file: elfPath,
@@ -516,17 +833,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         binBtn.addEventListener('click', () => {
             let elfPath = filePath.value;
-            if (elfPath.endsWith('.c') || elfPath.endsWith('.cpp')) {
-                const baseName = elfPath.split(/[\\/]/).pop().replace(/\\.(c|cpp)$/, '');
-                elfPath = elfPath.replace(/[^\\/]+$/, 'build/' + baseName + '.elf');
+            if (!elfPath) {
+                showStatus('error', 'X', 'No file selected');
+                return;
             }
+            
+            // If source file selected, find corresponding ELF
+            if (elfPath.match(/\\.(c|cpp|cc|cxx)$/i)) {
+                const baseName = elfPath.split(/[\\\\/]/).pop().replace(/\\.(c|cpp|cc|cxx)$/i, '');
+                const dir = elfPath.substring(0, elfPath.lastIndexOf(elfPath.includes('/') ? '/' : '\\\\'));
+                elfPath = dir + (elfPath.includes('/') ? '/' : '\\\\') + 'build' + (elfPath.includes('/') ? '/' : '\\\\') + baseName + '.elf';
+            }
+            
             vscode.postMessage({
                 command: 'bin',
                 file: elfPath
             });
         });
 
-        // Save settings when changed
         function saveSettings() {
             vscode.postMessage({
                 command: 'saveSettings',
@@ -536,11 +860,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             });
         }
 
-        arch.addEventListener('change', saveSettings);
-        opt.addEventListener('change', saveSettings);
-        bare.addEventListener('change', saveSettings);
-
-        // Show status
         function showStatus(type, icon, text) {
             statusContainer.classList.remove('hidden');
             status.className = 'status ' + type;
@@ -552,10 +871,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         window.addEventListener('message', event => {
             const message = event.data;
             switch (message.command) {
+                case 'fileTree':
+                    allFiles = message.files || [];
+                    workspaceRoot = message.workspaceRoot || '';
+                    if (message.noWorkspace) {
+                        fileTree.innerHTML = '<div class="file-tree-empty">No folder open<br><button onclick="openFolder()">Open Folder</button></div>';
+                    } else {
+                        renderFileTree(allFiles);
+                    }
+                    break;
                 case 'activeFile':
                 case 'fileSelected':
                     filePath.value = message.file;
-                    fileName.textContent = message.fileName || message.file.split(/[\\/]/).pop();
+                    fileName.textContent = message.fileName || message.file.split(/[\\\\/]/).pop();
                     fileName.classList.remove('placeholder');
                     break;
                 case 'settings':
@@ -571,10 +899,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'buildComplete':
                     if (message.success) {
-                        showStatus('success', '✅', 'Build successful!');
+                        showStatus('success', '[OK]', 'Build successful!');
                         output.className = 'output success';
                     } else {
-                        showStatus('error', '❌', 'Build failed');
+                        showStatus('error', '[X]', 'Build failed');
                         output.className = 'output error';
                     }
                     output.textContent = message.output || 'No output';
@@ -587,9 +915,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'dumpComplete':
                 case 'binComplete':
-                    statusContainer.classList.add('hidden');
+                    if (message.success) {
+                        showStatus('success', '[OK]', 'Done!');
+                        output.className = 'output success';
+                    } else {
+                        showStatus('error', '[X]', 'Failed');
+                        output.className = 'output error';
+                    }
                     output.textContent = message.output || 'No output';
-                    output.className = 'output' + (message.success ? ' success' : ' error');
                     setButtonsDisabled(false);
                     break;
             }
