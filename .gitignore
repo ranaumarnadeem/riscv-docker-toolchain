@@ -1,3 +1,17 @@
 # CodeQL temporary files
 _codeql_detected_source_root
 Makefile
+
+# Build outputs
+build/
+*.elf
+*.bin
+
+# Logs
+logs/
+*.log
+
+# VS Code extension
+vscode-extension/out/
+vscode-extension/node_modules/
+*.vsix

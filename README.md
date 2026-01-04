@@ -49,6 +49,9 @@ rv build file.c --arch 32imac --opt O0           # Optimization: O0/O1/O2/O3/Os/
 rv build file.c --arch 32imac --bare             # Bare-metal (no libc)
 rv build file.c --arch 32imc_zba_zbb             # Custom extensions
 rv build file.c --arch 32imac --cflags "-DDEBUG" # Extra flags
+rv build file.c --arch 32imac --bare --linker my.ld    # Custom linker script
+rv build file.c --arch 32imac --bare --startup crt0.S  # Custom startup file
+rv build file.c --arch 32imac -v                       # Verbose (show commands)
 ```
 
 ## Architectures
@@ -94,6 +97,19 @@ The `--bare` flag uses included linker scripts and startup code:
 | `riscv_32.ld` / `riscv64.ld` | Linker scripts |
 | `crt0_32.S` / `crt0_64.S` | Startup code |
 
+### Custom Linker/Startup
+
+```bash
+# Use custom linker script
+rv build main.c --arch 32imac --bare --linker scripts/my_linker.ld
+
+# Use custom startup assembly
+rv build main.c --arch 32imac --bare --startup scripts/my_crt0.S
+
+# Both custom
+rv build main.c --arch 32imac --bare --linker my.ld --startup my_crt0.S
+```
+
 Customize memory layout in the linker script:
 
 ```ld
@@ -108,6 +124,22 @@ MEMORY {
 - **GCC**: 15.2.0
 - **Binutils**: 2.44
 - **Newlib**: Latest
+
+## Output Files
+
+By default, builds create:
+- `build/` - ELF executables
+- `*.bin` - Raw binary files (from `rv bin`)
+- `logs/` - Build logs (VS Code extension)
+
+Add to `.gitignore`:
+```
+build/
+logs/
+*.elf
+*.bin
+*.log
+```
 
 ## License
 

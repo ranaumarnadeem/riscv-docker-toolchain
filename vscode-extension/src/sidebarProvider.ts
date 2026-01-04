@@ -70,6 +70,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         fileName: path.basename(message.file)
                     });
                     break;
+                case 'browsePath':
+                    await this._handleBrowsePath(message.targetId, message.pathType);
+                    break;
             }
         });
 
@@ -229,6 +232,73 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         if (folders && folders.length > 0) {
             await vscode.commands.executeCommand('vscode.openFolder', folders[0]);
+        }
+    }
+
+    private async _handleBrowsePath(targetId: string, pathType: string) {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+        
+        if (pathType === 'folder') {
+            // Browse for folder (output directory, log directory)
+            const folders = await vscode.window.showOpenDialog({
+                canSelectFiles: false,
+                canSelectFolders: true,
+                canSelectMany: false,
+                defaultUri: workspaceRoot,
+                openLabel: 'Select Folder'
+            });
+
+            if (folders && folders.length > 0) {
+                // Return relative path if inside workspace
+                let selectedPath = folders[0].fsPath;
+                const wsRoot = workspaceRoot?.fsPath;
+                if (wsRoot && selectedPath.startsWith(wsRoot)) {
+                    selectedPath = path.relative(wsRoot, selectedPath) || selectedPath;
+                }
+                this._sendToWebview({
+                    command: 'pathSelected',
+                    targetId,
+                    path: selectedPath
+                });
+            }
+        } else {
+            // Browse for file
+            let filters: { [key: string]: string[] };
+            switch (pathType) {
+                case 'linker':
+                    filters = { 'Linker Scripts': ['ld'] };
+                    break;
+                case 'startup':
+                    filters = { 'Assembly/Startup': ['S', 's', 'asm'] };
+                    break;
+                case 'automation':
+                    filters = { 'Scripts': ['sh', 'bat', 'cmd', 'ps1'], 'Makefile': ['*'] };
+                    break;
+                default:
+                    filters = { 'All Files': ['*'] };
+            }
+
+            const files = await vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectMany: false,
+                defaultUri: workspaceRoot,
+                filters,
+                openLabel: 'Select File'
+            });
+
+            if (files && files.length > 0) {
+                // Return relative path if inside workspace
+                let selectedPath = files[0].fsPath;
+                const wsRoot = workspaceRoot?.fsPath;
+                if (wsRoot && selectedPath.startsWith(wsRoot)) {
+                    selectedPath = path.relative(wsRoot, selectedPath) || selectedPath;
+                }
+                this._sendToWebview({
+                    command: 'pathSelected',
+                    targetId,
+                    path: selectedPath
+                });
+            }
         }
     }
 
@@ -582,6 +652,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .adv-row label { font-size: 10px; margin-bottom: 2px; }
         .adv-row input[type="text"] { margin-bottom: 0; font-size: 11px; }
         .adv-hint { font-size: 9px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+        .path-input {
+            display: flex;
+            gap: 4px;
+        }
+        .path-input input { flex: 1; margin-bottom: 0; }
+        .path-input button {
+            padding: 4px 8px;
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+        .path-input button:hover { background: var(--vscode-button-secondaryHoverBackground); }
         
         /* Status */
         .status {
@@ -723,12 +808,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             <div class="collapsible-content">
                 <div class="adv-row">
                     <label for="outputDir">Output Directory</label>
-                    <input type="text" id="outputDir" placeholder="build (default)">
+                    <div class="path-input">
+                        <input type="text" id="outputDir" placeholder="build (default)">
+                        <button type="button" onclick="browsePath('outputDir', 'folder')">...</button>
+                    </div>
                     <div class="adv-hint">ELF, binary, and dump files location</div>
                 </div>
                 <div class="adv-row">
                     <label for="logDir">Log Directory</label>
-                    <input type="text" id="logDir" placeholder="logs (default)">
+                    <div class="path-input">
+                        <input type="text" id="logDir" placeholder="logs (default)">
+                        <button type="button" onclick="browsePath('logDir', 'folder')">...</button>
+                    </div>
                     <div class="adv-hint">Build logs and verbose output</div>
                 </div>
                 <div class="adv-row">
@@ -745,15 +836,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 </div>
                 <div class="adv-row">
                     <label for="linkerScript">Linker Script Path</label>
-                    <input type="text" id="linkerScript" placeholder="Optional (.ld)">
+                    <div class="path-input">
+                        <input type="text" id="linkerScript" placeholder="Optional (.ld)">
+                        <button type="button" onclick="browsePath('linkerScript', 'linker')">...</button>
+                    </div>
                 </div>
                 <div class="adv-row">
                     <label for="startupScript">Startup Script Path</label>
-                    <input type="text" id="startupScript" placeholder="Optional (crt0.S)">
+                    <div class="path-input">
+                        <input type="text" id="startupScript" placeholder="Optional (crt0.S)">
+                        <button type="button" onclick="browsePath('startupScript', 'startup')">...</button>
+                    </div>
                 </div>
                 <div class="adv-row">
                     <label for="automationScript">Automation Script</label>
-                    <input type="text" id="automationScript" placeholder="Optional (Makefile, .sh, .bat)">
+                    <div class="path-input">
+                        <input type="text" id="automationScript" placeholder="Optional (Makefile, .sh, .bat)">
+                        <button type="button" onclick="browsePath('automationScript', 'automation')">...</button>
+                    </div>
                     <div class="adv-hint">Custom build/automation script</div>
                 </div>
             </div>
@@ -800,6 +900,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             document.getElementById('advancedSettings').classList.toggle('open');
         }
         window.toggleAdvanced = toggleAdvanced;
+
+        // Browse for path (folder or file)
+        function browsePath(targetId, pathType) {
+            vscode.postMessage({ command: 'browsePath', targetId, pathType });
+        }
+        window.browsePath = browsePath;
 
         // Request files and settings on load
         vscode.postMessage({ command: 'getFiles' });
@@ -1067,6 +1173,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         showStatus('error', '[X]', 'Failed');
                     }
                     setButtonsDisabled(false);
+                    break;
+                case 'pathSelected':
+                    if (message.targetId && message.path) {
+                        document.getElementById(message.targetId).value = message.path;
+                    }
                     break;
             }
         });

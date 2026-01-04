@@ -152,8 +152,16 @@ def cmd_build(args):
     # Handle bare-metal vs hosted build
     if args.bare:
         # Bare-metal: use custom linker script and startup code
-        ld_script = f"/usr/local/share/riscv/riscv{'64' if is_64bit else '_32'}.ld"
-        crt0 = f"/usr/local/share/riscv/crt0_{'64' if is_64bit else '32'}.S"
+        # Use custom linker/startup if provided, otherwise use defaults
+        if args.linker:
+            ld_script = args.linker
+        else:
+            ld_script = f"/usr/local/share/riscv/riscv{'64' if is_64bit else '_32'}.ld"
+        
+        if args.startup:
+            crt0 = args.startup
+        else:
+            crt0 = f"/usr/local/share/riscv/crt0_{'64' if is_64bit else '32'}.S"
         
         cmd.extend([
             "-nostartfiles",
@@ -174,9 +182,20 @@ def cmd_build(args):
         # Split cflags string into individual flags
         cmd.extend(args.cflags.split())
     
+    # Verbose output
+    verbose = getattr(args, 'verbose', False)
+    
     print(f"Compiling {source} -> {output}")
     print(f"  Architecture: {march}, ABI: {mabi}, Optimization: -{opt}")
     print(f"  Mode: {build_mode}")
+    if args.bare:
+        if args.linker:
+            print(f"  Linker script: {args.linker}")
+        if args.startup:
+            print(f"  Startup file: {args.startup}")
+    
+    if verbose:
+        print(f"  Command: {' '.join(cmd)}")
     
     result = run_command(cmd)
     
@@ -368,6 +387,19 @@ Running from host:
     build_parser.add_argument(
         "--cflags",
         help="Additional compiler flags (e.g., \"--cflags '-DDEBUG -Wall'\")"
+    )
+    build_parser.add_argument(
+        "--linker",
+        help="Custom linker script path (overrides default for bare-metal builds)"
+    )
+    build_parser.add_argument(
+        "--startup",
+        help="Custom startup assembly file (overrides default crt0 for bare-metal builds)"
+    )
+    build_parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Show detailed build commands and output"
     )
     build_parser.set_defaults(func=cmd_build)
     
