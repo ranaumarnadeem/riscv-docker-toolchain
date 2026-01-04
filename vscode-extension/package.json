@@ -2,7 +2,7 @@
   "name": "riscv-toolchain",
   "displayName": "RISC-V Toolchain",
   "description": "Build, disassemble, and convert RISC-V programs with Docker-based GNU toolchain",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "publisher": "ranaumarnadeem",
   "icon": "resources/riscv.png",
   "galleryBanner": {
@@ -90,7 +90,14 @@
         "riscv-toolchain.defaultOptimization": {
           "type": "string",
           "default": "O2",
-          "enum": ["O0", "O1", "O2", "O3", "Os", "Oz"],
+          "enum": [
+            "O0",
+            "O1",
+            "O2",
+            "O3",
+            "Os",
+            "Oz"
+          ],
           "description": "Default optimization level"
         },
         "riscv-toolchain.bareMetal": {
