@@ -2,9 +2,13 @@
   "name": "riscv-toolchain",
   "displayName": "RISC-V Toolchain",
   "description": "Build, disassemble, and convert RISC-V programs with Docker-based GNU toolchain",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "publisher": "ranaumarnadeem",
   "icon": "resources/riscv.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/ranaumarnadeem/riscv-docker-toolchain"
