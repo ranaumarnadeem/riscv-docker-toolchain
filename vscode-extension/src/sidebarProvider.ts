@@ -586,6 +586,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
         .checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
         .checkbox-row label { margin: 0; cursor: pointer; }
+        .help-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            font-size: 10px;
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border-radius: 50%;
+            cursor: help;
+            margin-left: 4px;
+        }
+        .help-icon:hover { background: var(--vscode-button-secondaryHoverBackground); }
         
         /* Buttons */
         .button-group { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -773,6 +787,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <div class="checkbox-row">
             <input type="checkbox" id="bare">
             <label for="bare">Bare-metal</label>
+            <span class="help-icon" title="Bare-metal build: No standard C library (libc). Uses custom linker script and startup code. Required for microcontrollers and embedded systems without an OS.">?</span>
         </div>
     </div>
 

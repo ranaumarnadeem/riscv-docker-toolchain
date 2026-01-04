@@ -184,11 +184,21 @@ export class DockerRunner {
         }
 
         if (options.linkerScript) {
-            args.push('--linker', options.linkerScript);
+            // Convert to relative path for Docker container
+            let linkerPath = options.linkerScript;
+            if (path.isAbsolute(linkerPath)) {
+                linkerPath = path.relative(workDir, linkerPath).replace(/\\/g, '/');
+            }
+            args.push('--linker', linkerPath);
         }
 
         if (options.startupScript) {
-            args.push('--startup', options.startupScript);
+            // Convert to relative path for Docker container
+            let startupPath = options.startupScript;
+            if (path.isAbsolute(startupPath)) {
+                startupPath = path.relative(workDir, startupPath).replace(/\\/g, '/');
+            }
+            args.push('--startup', startupPath);
         }
 
         if (options.verbose) {
